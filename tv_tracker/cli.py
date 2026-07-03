@@ -30,6 +30,7 @@ from tv_tracker.services import (
     get_stats,
     get_watched_episode_keys,
     list_tracked_items,
+    mark_next_watched,
     mark_watched,
     remove_tracked_item,
     run_sync,
@@ -767,25 +768,49 @@ def status(
 def watch(
     item_id: int = typer.Argument(..., help="Tracked item ID"),
     season: int = typer.Option(None, "--season", "-s"),
-    episode: int = typer.Option(None, "--episode", "-e"),
+    episode: str = typer.Option(
+        None,
+        "--episode",
+        "-e",
+        help="Episode number, or 'next' to mark the next unwatched episode",
+    ),
 ) -> None:
     """Mark a movie or episode as watched.
 
     For movies:  tv-tracker watch <id>
     For shows:   tv-tracker watch <id> --season N --episode M
+    Next episode: tv-tracker watch <id> --episode next
     """
     init_db()
 
+    is_next = episode is not None and episode.lower() == "next"
+    episode_num: int | None = None
+    if episode is not None and not is_next:
+        try:
+            episode_num = int(episode)
+        except ValueError:
+            console.print(f"[red]Invalid episode '{episode}'. Use a number or 'next'.[/red]")
+            raise typer.Exit(1) from None
+
+    if is_next:
+        _ensure_tmdb_credentials()
+
     try:
-        item = mark_watched(item_id, season, episode)
+        if is_next:
+            item, season, episode_num = mark_next_watched(item_id, season)
+        else:
+            item = mark_watched(item_id, season, episode_num)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        _print_api_error("find next episode", exc)
         raise typer.Exit(1) from exc
 
     if item.media_type == MediaType.MOVIE:
         console.print(f"[green]Marked watched:[/green] {item.title}")
     else:
-        console.print(f"[green]Marked watched:[/green] {item.title} S{season:02}E{episode:02}")
+        console.print(f"[green]Marked watched:[/green] {item.title} S{season:02}E{episode_num:02}")
 
 
 @app.command()

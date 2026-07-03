@@ -353,6 +353,71 @@ def mark_watched(
         return item
 
 
+def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedItem, int, int]:
+    """Mark the next unwatched episode of a show as watched.
+
+    If *season* is given, the first unwatched episode within that season is
+    marked.  If *season* is None the show's season structure is fetched from
+    the API and the first unwatched episode across all non-special seasons
+    is marked.
+
+    Returns ``(item, season_number, episode_number)``.
+    Raises ``ValueError`` if the item doesn't exist, is a movie, has no
+    episode data, or every relevant episode is already watched.
+    """
+    with session_scope() as session:
+        item = session.get(TrackedItem, item_id)
+        if item is None:
+            raise ValueError(f"No tracked item with ID {item_id}")
+        if item.media_type == MediaType.MOVIE:
+            raise ValueError(
+                f"'{item.title}' is a movie — use 'tv-tracker watch {item_id}' "
+                "without --episode to mark it watched."
+            )
+        watched = {
+            (we.season_number, we.episode_number)
+            for we in session.query(WatchedEpisode).filter_by(tracked_item_id=item_id)
+        }
+
+    details = fetch_details(item.source.value, item.external_id, "show")
+    if not isinstance(details, ShowDetails):
+        raise ValueError(f"Could not load season data for '{item.title}'.")
+
+    seasons = sorted(
+        (s for s in details.seasons if s.season_number > 0 and s.episode_count > 0),
+        key=lambda s: s.season_number,
+    )
+    if season is not None:
+        seasons = [s for s in seasons if s.season_number == season]
+        if not seasons:
+            raise ValueError(f"'{item.title}' has no season {season} with episodes.")
+    if not seasons:
+        raise ValueError(
+            f"Could not determine episode counts for '{item.title}'. "
+            "Specify --season and --episode explicitly."
+        )
+
+    target: tuple[int, int] | None = None
+    for s in seasons:
+        for ep_num in range(1, s.episode_count + 1):
+            if (s.season_number, ep_num) not in watched:
+                target = (s.season_number, ep_num)
+                break
+        if target is not None:
+            break
+
+    if target is None:
+        if season is not None:
+            raise ValueError(
+                f"All episodes of '{item.title}' season {season} are already watched."
+            )
+        raise ValueError(f"All episodes of '{item.title}' are already watched.")
+
+    target_season, target_episode = target
+    mark_watched(item_id, target_season, target_episode)
+    return item, target_season, target_episode
+
+
 def unmark_watched(item_id: int, season: int | None = None, episode: int | None = None) -> str:
     """Remove the watched mark from a movie or episode.
 

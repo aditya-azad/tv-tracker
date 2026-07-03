@@ -54,6 +54,7 @@ tv-tracker list --status watching                # filter by status
 tv-tracker status 1 watching                     # update watch status
 tv-tracker watch 1                               # mark a movie as watched
 tv-tracker watch 1 --season 1 --episode 1        # mark an episode as watched
+tv-tracker watch 1 --episode next                # mark the next unwatched episode
 tv-tracker unwatch 1 --season 1 --episode 1      # remove a watched mark
 tv-tracker remove 1                              # remove from tracking list
 tv-tracker alerts                                # sync, then list unwatched episodes
