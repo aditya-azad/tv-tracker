@@ -13,7 +13,7 @@ from rich.table import Table
 from tv_tracker import __version__
 from tv_tracker.api import EpisodeInfo, MovieDetails, ShowDetails
 from tv_tracker.db import init_db
-from tv_tracker.models import MediaType, WatchStatus
+from tv_tracker.models import MediaType, TrackedItem, WatchStatus
 from tv_tracker.services import (
     VALID_MEDIA_TYPES,
     VALID_SOURCES,
@@ -21,15 +21,22 @@ from tv_tracker.services import (
     add_tracked_item,
     fetch_details,
     fetch_season_episodes,
+    find_tracked_item,
+    get_currently_watching,
+    get_recently_completed,
+    get_watched_episode_keys,
     list_tracked_items,
+    mark_watched,
     remove_tracked_item,
+    set_watch_status,
+    unmark_watched,
 )
 from tv_tracker.services import search as search_titles
 
 app = typer.Typer(
     name="tv-tracker",
     help="Track movies and shows (including anime) from the command line.",
-    no_args_is_help=True,
+    no_args_is_help=False,
 )
 console = Console()
 
@@ -88,13 +95,43 @@ def _validate_status(status: str | None) -> None:
 def _print_api_error(action: str, exc: Exception) -> None:
     if isinstance(exc, httpx.HTTPStatusError):
         console.print(
-            f"[red]Could not {action}: HTTP {exc.response.status_code}[/red]\n"
-            f"[dim]{exc}[/dim]"
+            f"[red]Could not {action}: HTTP {exc.response.status_code}[/red]\n[dim]{exc}[/dim]"
         )
     elif isinstance(exc, httpx.RequestError):
         console.print(f"[red]Could not {action}: network error[/red]\n[dim]{exc}[/dim]")
     else:
         console.print(f"[red]Could not {action}: {exc}[/red]")
+
+
+def _progress_text(watched: int, total: int | None) -> str:
+    """Format a watched/total progress string with colour."""
+    if total is None or total == 0:
+        return f"{watched}/[dim]?[/dim]"
+    if watched >= total:
+        return f"[green]{watched}/{total}[/green]"
+    if watched == 0:
+        return f"[dim]{watched}/{total}[/dim]"
+    return f"{watched}/{total}"
+
+
+def _last_watched_label(item: TrackedItem) -> str:
+    """Return a 'S01E05' label for the most recently watched episode, or '—'."""
+    if not item.watched_episodes:
+        return "[dim]—[/dim]"
+    last = max(item.watched_episodes, key=lambda e: (e.season_number, e.episode_number))
+    if last.season_number == 0:
+        return "[green]watched[/green]"
+    return f"S{last.season_number:02}E{last.episode_number:02}"
+
+
+def _next_episode_label(item: TrackedItem) -> str:
+    """Estimate the next unwatched episode label from watched records."""
+    if not item.watched_episodes:
+        return "S01E01"
+    last = max(item.watched_episodes, key=lambda e: (e.season_number, e.episode_number))
+    if last.season_number == 0:
+        return "[dim]—[/dim]"
+    return f"S{last.season_number:02}E{last.episode_number + 1:02}"
 
 
 @app.callback(invoke_without_command=True)
@@ -103,15 +140,105 @@ def main(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is not None:
         return
     init_db()
+
     console.print(
         Panel.fit(
-            "[bold cyan]TV Tracker[/bold cyan] v"
-            f"{__version__}\n\n"
-            "[dim]Dashboard coming in Phase 3.[/dim]\n"
-            "[dim]Run [bold]tv-tracker --help[/bold] to see available commands.[/dim]",
+            f"[bold cyan]TV Tracker[/bold cyan] v{__version__}",
             border_style="cyan",
         )
     )
+
+    _render_currently_watching()
+    _render_recently_completed()
+
+    console.print(
+        "\n[dim]Run [/dim][bold]tv-tracker --help[/bold][dim] to see available commands.[/dim]"
+    )
+
+
+def _render_currently_watching() -> None:
+    """Render the 'Currently Watching' dashboard section."""
+    items = get_currently_watching()
+    console.print()
+    if not items:
+        console.print("[dim]No items currently watching.[/dim]")
+        return
+
+    table = Table(
+        title="Currently Watching",
+        title_style="bold green",
+        border_style="green",
+    )
+    table.add_column("ID", style="dim", width=4)
+    table.add_column("Title", min_width=20)
+    table.add_column("Type", width=5)
+    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Last", width=9)
+    table.add_column("Next", width=9)
+
+    for item in items:
+        if item.media_type == MediaType.MOVIE:
+            is_watched = len(item.watched_episodes) > 0
+            progress = "[green]watched[/green]" if is_watched else "[dim]not watched[/dim]"
+            last = _last_watched_label(item)
+            next_ep = "[dim]—[/dim]"
+        else:
+            watched_count = len(item.watched_episodes)
+            total = item.total_episodes
+            progress = _progress_text(watched_count, total)
+            last = _last_watched_label(item)
+            next_ep = _next_episode_label(item)
+
+        table.add_row(
+            str(item.id),
+            item.title,
+            item.media_type.value,
+            progress,
+            last,
+            next_ep,
+        )
+
+    console.print(table)
+
+
+def _render_recently_completed() -> None:
+    """Render the 'Recently Completed' dashboard section."""
+    items = get_recently_completed()
+    console.print()
+    if not items:
+        return
+
+    table = Table(
+        title="Recently Completed",
+        title_style="bold cyan",
+        border_style="cyan",
+    )
+    table.add_column("ID", style="dim", width=4)
+    table.add_column("Title", min_width=20)
+    table.add_column("Type", width=5)
+    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Updated", width=12)
+
+    for item in items:
+        if item.media_type == MediaType.MOVIE:
+            is_watched = len(item.watched_episodes) > 0
+            progress = "[green]watched[/green]" if is_watched else "[dim]not watched[/dim]"
+        else:
+            watched_count = len(item.watched_episodes)
+            total = item.total_episodes
+            progress = _progress_text(watched_count, total)
+
+        updated = item.updated_at.strftime("%Y-%m-%d") if item.updated_at else "[dim]—[/dim]"
+
+        table.add_row(
+            str(item.id),
+            item.title,
+            item.media_type.value,
+            progress,
+            updated,
+        )
+
+    console.print(table)
 
 
 @app.command()
@@ -204,7 +331,12 @@ def details(
             except Exception as exc:
                 _print_api_error(f"fetch season {season} episodes", exc)
                 raise typer.Exit(1) from exc
-            _render_episodes_table(info.title, season, episodes)
+
+            tracked = find_tracked_item(source, external_id)
+            watched_keys: set[tuple[int, int]] = (
+                get_watched_episode_keys(tracked.id) if tracked else set()
+            )
+            _render_episodes_table(info.title, season, episodes, watched_keys)
 
 
 def _render_movie_details(info: MovieDetails, source: str, external_id: str) -> None:
@@ -249,12 +381,16 @@ def _render_show_details(info: ShowDetails, source: str, external_id: str) -> No
 
 
 def _render_episodes_table(
-    title: str, season_number: int, episodes: list[EpisodeInfo]
+    title: str,
+    season_number: int,
+    episodes: list[EpisodeInfo],
+    watched_keys: set[tuple[int, int]] | None = None,
 ) -> None:
     table = Table(title=f"{title} — Season {season_number} Episodes")
     table.add_column("#", width=4)
     table.add_column("Title", ratio=2)
     table.add_column("Air Date", width=12)
+    table.add_column("Watched", width=8, justify="center")
 
     if not episodes:
         console.print(table)
@@ -262,10 +398,15 @@ def _render_episodes_table(
         return
 
     for ep in episodes:
+        is_watched = (
+            watched_keys is not None and (season_number, ep.episode_number) in watched_keys
+        )
+        watched_mark = "[green]✓[/green]" if is_watched else "[dim]·[/dim]"
         table.add_row(
             str(ep.episode_number),
             ep.name or "[dim]—[/dim]",
             ep.air_date or "[dim]—[/dim]",
+            watched_mark,
         )
     console.print(table)
 
@@ -328,17 +469,20 @@ def list_items(
     table.add_column("Status", width=12)
     table.add_column("Seasons", width=7, justify="right")
     table.add_column("Episodes", width=8, justify="right")
+    table.add_column("Progress", width=12, justify="right")
     table.add_column("Last Synced", width=20)
 
     for item in items:
         if item.media_type == MediaType.MOVIE:
             seasons = "[dim]—[/dim]"
             episodes = "[dim]—[/dim]"
+            is_watched = len(item.watched_episodes) > 0
+            progress = "[green]watched[/green]" if is_watched else "[dim]not watched[/dim]"
         else:
             seasons = str(item.total_seasons) if item.total_seasons else "[dim]?[/dim]"
-            episodes = (
-                str(item.total_episodes) if item.total_episodes else "[dim]?[/dim]"
-            )
+            episodes = str(item.total_episodes) if item.total_episodes else "[dim]?[/dim]"
+            watched_count = len(item.watched_episodes)
+            progress = _progress_text(watched_count, item.total_episodes)
 
         synced = (
             item.last_synced_at.strftime("%Y-%m-%d %H:%M")
@@ -354,6 +498,7 @@ def list_items(
             _status_badge(item.status),
             seasons,
             episodes,
+            progress,
             synced,
         )
 
@@ -367,8 +512,17 @@ def status(
         ..., help="planning | watching | completed | on_hold | dropped"
     ),
 ) -> None:
-    """Update the watch status of a tracked item. (Phase 3)"""
-    console.print("[yellow]Status update will be implemented in Phase 3.[/yellow]")
+    """Update the watch status of a tracked item."""
+    _validate_status(new_status)
+    init_db()
+
+    try:
+        item = set_watch_status(item_id, new_status)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]Updated:[/green] {item.title} → {_status_badge(item.status)}")
 
 
 @app.command()
@@ -377,8 +531,23 @@ def watch(
     season: int = typer.Option(None, "--season", "-s"),
     episode: int = typer.Option(None, "--episode", "-e"),
 ) -> None:
-    """Mark a movie or episode as watched. (Phase 3)"""
-    console.print("[yellow]Watch tracking will be implemented in Phase 3.[/yellow]")
+    """Mark a movie or episode as watched.
+
+    For movies:  tv-tracker watch <id>
+    For shows:   tv-tracker watch <id> --season N --episode M
+    """
+    init_db()
+
+    try:
+        item = mark_watched(item_id, season, episode)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    if item.media_type == MediaType.MOVIE:
+        console.print(f"[green]Marked watched:[/green] {item.title}")
+    else:
+        console.print(f"[green]Marked watched:[/green] {item.title} S{season:02}E{episode:02}")
 
 
 @app.command()
@@ -387,8 +556,23 @@ def unwatch(
     season: int = typer.Option(None, "--season", "-s"),
     episode: int = typer.Option(None, "--episode", "-e"),
 ) -> None:
-    """Unmark a movie or episode as watched. (Phase 3)"""
-    console.print("[yellow]Unwatch will be implemented in Phase 3.[/yellow]")
+    """Remove the watched mark from a movie or episode.
+
+    For movies:  tv-tracker unwatch <id>
+    For shows:   tv-tracker unwatch <id> --season N --episode M
+    """
+    init_db()
+
+    try:
+        title = unmark_watched(item_id, season, episode)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    if season is not None and episode is not None:
+        console.print(f"[green]Unmarked:[/green] {title} S{season:02}E{episode:02}")
+    else:
+        console.print(f"[green]Unmarked:[/green] {title}")
 
 
 @app.command()
