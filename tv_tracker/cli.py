@@ -754,14 +754,20 @@ def status(
     """Update the watch status of a tracked item."""
     _validate_status(new_status)
     init_db()
+    _ensure_tmdb_credentials()
 
     try:
         item = set_watch_status(item_id, new_status)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+    except Exception as exc:
+        _print_api_error("update status", exc)
+        raise typer.Exit(1) from exc
 
     console.print(f"[green]Updated:[/green] {item.title} → {_status_badge(item.status)}")
+    if item.media_type == MediaType.SHOW and item.status == WatchStatus.COMPLETED:
+        console.print("[dim]All episodes marked as watched.[/dim]")
 
 
 @app.command()

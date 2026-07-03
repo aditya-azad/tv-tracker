@@ -283,13 +283,56 @@ _MOVIE_EPISODE = 0
 def set_watch_status(item_id: int, status: str) -> TrackedItem:
     """Update the watch status of a tracked item.
 
+    When a show is marked **completed**, all of its episodes are also marked
+    watched (episode counts are fetched from the API so that episodes not yet
+    aired locally are still recorded).
+
     Raises ``ValueError`` if the item does not exist or *status* is invalid.
     """
+    new_status = WatchStatus(status)
+
     with session_scope() as session:
         item = session.get(TrackedItem, item_id)
         if item is None:
             raise ValueError(f"No tracked item with ID {item_id}")
-        item.status = WatchStatus(status)
+
+        if item.media_type == MediaType.SHOW and new_status == WatchStatus.COMPLETED:
+            source = item.source.value
+            external_id = item.external_id
+            title = item.title
+            watched = {
+                (we.season_number, we.episode_number)
+                for we in session.query(WatchedEpisode).filter_by(tracked_item_id=item_id)
+            }
+        else:
+            item.status = new_status
+            return item
+
+    # Show being marked completed — fetch full episode structure and fill in gaps.
+    details = fetch_details(source, external_id, "show")
+    if not isinstance(details, ShowDetails):
+        raise ValueError(f"Could not load episode data for '{title}'.")
+
+    seasons = sorted(
+        (s for s in details.seasons if s.season_number > 0 and s.episode_count > 0),
+        key=lambda s: s.season_number,
+    )
+
+    with session_scope() as session:
+        for s in seasons:
+            for ep_num in range(1, s.episode_count + 1):
+                if (s.season_number, ep_num) not in watched:
+                    session.add(
+                        WatchedEpisode(
+                            tracked_item_id=item_id,
+                            season_number=s.season_number,
+                            episode_number=ep_num,
+                        )
+                    )
+        item = session.get(TrackedItem, item_id)
+        if item is None:
+            raise ValueError(f"No tracked item with ID {item_id}")
+        item.status = new_status
         return item
 
 
@@ -350,6 +393,10 @@ def mark_watched(
                 episode_number=episode_num,
             )
         )
+
+        if item.media_type == MediaType.SHOW and item.status == WatchStatus.PLANNING:
+            item.status = WatchStatus.WATCHING
+
         return item
 
 
