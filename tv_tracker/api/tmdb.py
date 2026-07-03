@@ -28,12 +28,9 @@ class TMDBClient(BaseAPIClient):
         cache_ttl: int | None = None,
         timeout: float | None = None,
     ) -> None:
-        key = api_key or settings.tmdb_api_key
-        token = access_token or settings.tmdb_access_token
-
         headers: dict[str, str] = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
 
         super().__init__(
             base_url=base_url or settings.tmdb_base_url,
@@ -42,7 +39,7 @@ class TMDBClient(BaseAPIClient):
             timeout=timeout,
             headers=headers,
         )
-        self._api_key: str | None = key
+        self._api_key: str | None = api_key
 
     # -- helpers -----------------------------------------------------------
 

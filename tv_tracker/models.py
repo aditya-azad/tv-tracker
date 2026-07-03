@@ -116,3 +116,15 @@ class WatchedEpisode(Base):
             f"WatchedEpisode(id={self.id}, tracked_item_id={self.tracked_item_id}, "
             f"S{self.season_number:02}E{self.episode_number:02})"
         )
+
+
+class Setting(Base):
+    """A key-value application setting stored in the database."""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"Setting(key={self.key!r})"

@@ -19,13 +19,14 @@ DATA_DIR: Path = _data_dir()
 DB_PATH: Path = Path(os.environ.get("TV_TRACKER_DB_PATH", str(DATA_DIR / "tracker.db")))
 
 TMDB_BASE_URL: str = os.environ.get("TMDB_BASE_URL", "https://api.themoviedb.org/3")
-TMDB_API_KEY: str | None = os.environ.get("TMDB_API_KEY")
-TMDB_ACCESS_TOKEN: str | None = os.environ.get("TMDB_ACCESS_TOKEN")
 
 JIKAN_BASE_URL: str = os.environ.get("JIKAN_BASE_URL", "https://api.jikan.moe/v4")
 
 DEFAULT_CACHE_TTL: int = 300  # 5 minutes
 DEFAULT_TIMEOUT: float = 30.0
+
+MAX_RETRIES: int = 3
+RETRY_BACKOFF_BASE: float = 0.5  # seconds; 0.5, 1.0, 2.0 …
 
 
 @dataclass(frozen=True)
@@ -47,11 +48,11 @@ class Settings:
 
     db_path: Path = field(default_factory=lambda: DB_PATH)
     tmdb_base_url: str = TMDB_BASE_URL
-    tmdb_api_key: str | None = TMDB_API_KEY
-    tmdb_access_token: str | None = TMDB_ACCESS_TOKEN
     jikan_base_url: str = JIKAN_BASE_URL
     cache_ttl: int = DEFAULT_CACHE_TTL
     timeout: float = DEFAULT_TIMEOUT
+    max_retries: int = MAX_RETRIES
+    retry_backoff_base: float = RETRY_BACKOFF_BASE
     tmdb_rate_limit: RateLimit = field(default_factory=lambda: RateLimit(50.0))
     jikan_rate_limit: RateLimit = field(default_factory=lambda: RateLimit(3.0, 60))
 

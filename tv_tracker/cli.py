@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import textwrap
+from typing import Any
 
 import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from tv_tracker import __version__
 from tv_tracker.api import EpisodeInfo, MovieDetails, ShowDetails
@@ -25,6 +27,7 @@ from tv_tracker.services import (
     get_currently_watching,
     get_recently_completed,
     get_shows_with_unwatched_episodes,
+    get_stats,
     get_watched_episode_keys,
     list_tracked_items,
     mark_watched,
@@ -34,6 +37,13 @@ from tv_tracker.services import (
     unmark_watched,
 )
 from tv_tracker.services import search as search_titles
+from tv_tracker.settings_store import (
+    delete_setting,
+    get_tmdb_access_token,
+    get_tmdb_api_key,
+    set_tmdb_access_token,
+    set_tmdb_api_key,
+)
 
 app = typer.Typer(
     name="tv-tracker",
@@ -94,10 +104,58 @@ def _validate_status(status: str | None) -> None:
         raise typer.Exit(1)
 
 
+def _ensure_tmdb_credentials() -> None:
+    """Prompt for a TMDB API key if none is stored in the database."""
+    if get_tmdb_api_key() or get_tmdb_access_token():
+        return
+
+    console.print()
+    console.print("[cyan]TMDB API key required to search and track titles.[/cyan]")
+    console.print(
+        "[dim]Get a free key at "
+        "https://www.themoviedb.org/settings/api[/dim]"
+    )
+    console.print()
+    key = typer.prompt("Enter your TMDB API key", hide_input=True, default="")
+    key = key.strip()
+    if not key:
+        console.print("[red]No API key provided.[/red]")
+        raise typer.Exit(1)
+    set_tmdb_api_key(key)
+    console.print("[green]API key saved to database.[/green]")
+    console.print()
+
+
 def _print_api_error(action: str, exc: Exception) -> None:
     if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 401:
+            console.print(
+                f"[red]Could not {action}: authentication failed (HTTP 401).[/red]\n"
+                "[dim]Run 'tv-tracker config --set-key' to update your TMDB API key.[/dim]"
+            )
+        elif status == 404:
+            console.print(
+                f"[red]Could not {action}: title not found (HTTP 404).[/red]"
+            )
+        elif status == 429:
+            console.print(
+                f"[red]Could not {action}: rate limit exceeded (HTTP 429).[/red]\n"
+                "[dim]Wait a moment and try again.[/dim]"
+            )
+        else:
+            console.print(
+                f"[red]Could not {action}: HTTP {status}[/red]\n[dim]{exc}[/dim]"
+            )
+    elif isinstance(exc, httpx.TimeoutException):
         console.print(
-            f"[red]Could not {action}: HTTP {exc.response.status_code}[/red]\n[dim]{exc}[/dim]"
+            f"[red]Could not {action}: request timed out.[/red]\n"
+            "[dim]Check your network connection and try again.[/dim]"
+        )
+    elif isinstance(exc, httpx.ConnectError):
+        console.print(
+            f"[red]Could not {action}: could not connect to the API.[/red]\n"
+            "[dim]Check your network connection and try again.[/dim]"
         )
     elif isinstance(exc, httpx.RequestError):
         console.print(f"[red]Could not {action}: network error[/red]\n[dim]{exc}[/dim]")
@@ -105,15 +163,25 @@ def _print_api_error(action: str, exc: Exception) -> None:
         console.print(f"[red]Could not {action}: {exc}[/red]")
 
 
-def _progress_text(watched: int, total: int | None) -> str:
-    """Format a watched/total progress string with colour."""
+_BAR_WIDTH = 10
+_BAR_FULL = "\u2588"
+_BAR_EMPTY = "\u2591"
+
+
+def _progress_bar(watched: int, total: int | None) -> Text:
+    """Return a Rich ``Text`` progress bar suitable for a table cell."""
     if total is None or total == 0:
-        return f"{watched}/[dim]?[/dim]"
-    if watched >= total:
-        return f"[green]{watched}/{total}[/green]"
-    if watched == 0:
-        return f"[dim]{watched}/{total}[/dim]"
-    return f"{watched}/{total}"
+        return Text(f"{watched}/?", style="dim")
+    filled = _BAR_WIDTH * watched // total if total > 0 else 0
+    bar = Text()
+    if filled > 0:
+        if watched >= total:
+            bar.append(_BAR_FULL * filled, style="green")
+        else:
+            bar.append(_BAR_FULL * filled, style="cyan")
+    bar.append(_BAR_EMPTY * (_BAR_WIDTH - filled), style="dim")
+    bar.append(f" {watched}/{total}")
+    return bar
 
 
 def _last_watched_label(item: TrackedItem) -> str:
@@ -150,6 +218,7 @@ def main(ctx: typer.Context) -> None:
         )
     )
 
+    _render_stats_summary()
     _render_currently_watching()
     _render_unwatched_shows()
     _render_recently_completed()
@@ -158,6 +227,46 @@ def main(ctx: typer.Context) -> None:
         "\n[dim]Run [/dim][bold]tv-tracker alerts[/bold]"
         "[dim] to sync and check for new content.[/dim]"
     )
+
+
+def _render_stats_summary() -> None:
+    """Render a one-line stats summary of the tracking list."""
+    try:
+        stats = get_stats()
+    except Exception:
+        return
+
+    if stats.total == 0:
+        console.print(
+            "[dim]No tracked items yet. Use [/dim]"
+            "[bold]tv-tracker search <query>[/bold]"
+            "[dim] to find titles to track.[/dim]"
+        )
+        return
+
+    parts = [
+        f"[bold]{stats.total}[/bold] tracked",
+        f"[green]{stats.watching}[/green] watching",
+        f"[blue]{stats.planning}[/blue] planning",
+        f"[cyan]{stats.completed}[/cyan] completed",
+    ]
+    if stats.on_hold:
+        parts.append(f"[yellow]{stats.on_hold}[/yellow] on hold")
+    if stats.dropped:
+        parts.append(f"[red]{stats.dropped}[/red] dropped")
+
+    type_parts: list[str] = []
+    if stats.movies:
+        type_parts.append(f"{stats.movies} movie{'s' if stats.movies != 1 else ''}")
+    if stats.shows:
+        type_parts.append(f"{stats.shows} show{'s' if stats.shows != 1 else ''}")
+
+    summary = "  ".join(parts)
+    if type_parts:
+        summary += f"  [dim]({', '.join(type_parts)})[/dim]"
+
+    console.print()
+    console.print(summary)
 
 
 def _render_currently_watching() -> None:
@@ -176,20 +285,24 @@ def _render_currently_watching() -> None:
     table.add_column("ID", style="dim", width=4)
     table.add_column("Title", min_width=20)
     table.add_column("Type", width=5)
-    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Progress", width=18)
     table.add_column("Last", width=9)
     table.add_column("Next", width=9)
 
     for item in items:
         if item.media_type == MediaType.MOVIE:
             is_watched = len(item.watched_episodes) > 0
-            progress = "[green]watched[/green]" if is_watched else "[dim]not watched[/dim]"
+            progress: Any = (
+                Text("watched", style="green")
+                if is_watched
+                else Text("not watched", style="dim")
+            )
             last = _last_watched_label(item)
             next_ep = "[dim]—[/dim]"
         else:
             watched_count = len(item.watched_episodes)
             total = item.total_episodes
-            progress = _progress_text(watched_count, total)
+            progress = _progress_bar(watched_count, total)
             last = _last_watched_label(item)
             next_ep = _next_episode_label(item)
 
@@ -220,17 +333,21 @@ def _render_recently_completed() -> None:
     table.add_column("ID", style="dim", width=4)
     table.add_column("Title", min_width=20)
     table.add_column("Type", width=5)
-    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Progress", width=18)
     table.add_column("Updated", width=12)
 
     for item in items:
         if item.media_type == MediaType.MOVIE:
             is_watched = len(item.watched_episodes) > 0
-            progress = "[green]watched[/green]" if is_watched else "[dim]not watched[/dim]"
+            progress: Any = (
+                Text("watched", style="green")
+                if is_watched
+                else Text("not watched", style="dim")
+            )
         else:
             watched_count = len(item.watched_episodes)
             total = item.total_episodes
-            progress = _progress_text(watched_count, total)
+            progress = _progress_bar(watched_count, total)
 
         updated = item.updated_at.strftime("%Y-%m-%d") if item.updated_at else "[dim]—[/dim]"
 
@@ -254,7 +371,7 @@ def _build_unwatched_table(items: list[TrackedItem]) -> Table:
     )
     table.add_column("ID", style="dim", width=4)
     table.add_column("Title", min_width=20)
-    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Progress", width=18)
     table.add_column("Unwatched", width=10, justify="right")
 
     for item in items:
@@ -264,7 +381,7 @@ def _build_unwatched_table(items: list[TrackedItem]) -> Table:
         table.add_row(
             str(item.id),
             item.title,
-            _progress_text(watched_count, total),
+            _progress_bar(watched_count, total),
             f"[yellow]{unwatched}[/yellow]",
         )
     return table
@@ -298,6 +415,62 @@ def init() -> None:
 
 
 @app.command()
+def config(
+    set_key: bool = typer.Option(False, "--set-key", help="Prompt to set the TMDB API key"),
+    set_token: bool = typer.Option(
+        False, "--set-token", help="Prompt to set the TMDB read access token"
+    ),
+    clear_key: bool = typer.Option(False, "--clear-key", help="Remove the stored TMDB API key"),
+    clear_token: bool = typer.Option(
+        False, "--clear-token", help="Remove the stored TMDB access token"
+    ),
+) -> None:
+    """Show or update stored TMDB credentials."""
+    init_db()
+
+    if clear_key:
+        delete_setting("tmdb_api_key")
+        console.print("[green]TMDB API key removed.[/green]")
+
+    if clear_token:
+        delete_setting("tmdb_access_token")
+        console.print("[green]TMDB access token removed.[/green]")
+
+    if set_key:
+        key = typer.prompt("Enter TMDB API key", hide_input=True, default="")
+        key = key.strip()
+        if not key:
+            console.print("[red]No API key provided.[/red]")
+            raise typer.Exit(1)
+        set_tmdb_api_key(key)
+        console.print("[green]TMDB API key saved.[/green]")
+
+    if set_token:
+        token = typer.prompt("Enter TMDB read access token", hide_input=True, default="")
+        token = token.strip()
+        if not token:
+            console.print("[red]No access token provided.[/red]")
+            raise typer.Exit(1)
+        set_tmdb_access_token(token)
+        console.print("[green]TMDB access token saved.[/green]")
+
+    if not any((set_key, set_token, clear_key, clear_token)):
+        has_key = get_tmdb_api_key() is not None
+        has_token = get_tmdb_access_token() is not None
+        console.print(
+            f"TMDB API key:     [{'green]set[/green]' if has_key else '[red]not set[/red]'}"
+        )
+        console.print(
+            f"TMDB access token: [{'green]set[/green]' if has_token else '[red]not set[/red]'}"
+        )
+        if not has_key and not has_token:
+            console.print(
+                "\n[dim]Run [/dim][bold]tv-tracker config --set-key[/bold]"
+                "[dim] to add your TMDB API key.[/dim]"
+            )
+
+
+@app.command()
 def search(
     query: str = typer.Argument(..., help="Title to search for"),
     media_type: str = typer.Option(None, "--type", "-t", help="Filter: movie | show"),
@@ -305,6 +478,7 @@ def search(
     """Search TMDB / Jikan for titles to track."""
     _validate_media_type(media_type)
     init_db()
+    _ensure_tmdb_credentials()
 
     try:
         response = search_titles(query, media_type)
@@ -356,6 +530,7 @@ def details(
     """View details for a title (seasons, episodes, metadata)."""
     _validate_source(source)
     init_db()
+    _ensure_tmdb_credentials()
 
     try:
         info = fetch_details(source, external_id)
@@ -462,6 +637,7 @@ def add(
     """Add a title to your tracking list."""
     _validate_source(source)
     init_db()
+    _ensure_tmdb_credentials()
 
     try:
         item = add_tracked_item(source, external_id)
@@ -512,7 +688,7 @@ def list_items(
     table.add_column("Status", width=12)
     table.add_column("Seasons", width=7, justify="right")
     table.add_column("Episodes", width=8, justify="right")
-    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Progress", width=18)
     table.add_column("Last Synced", width=20)
 
     for item in items:
@@ -520,12 +696,16 @@ def list_items(
             seasons = "[dim]—[/dim]"
             episodes = "[dim]—[/dim]"
             is_watched = len(item.watched_episodes) > 0
-            progress = "[green]watched[/green]" if is_watched else "[dim]not watched[/dim]"
+            progress: Any = (
+                Text("watched", style="green")
+                if is_watched
+                else Text("not watched", style="dim")
+            )
         else:
             seasons = str(item.total_seasons) if item.total_seasons else "[dim]?[/dim]"
             episodes = str(item.total_episodes) if item.total_episodes else "[dim]?[/dim]"
             watched_count = len(item.watched_episodes)
-            progress = _progress_text(watched_count, item.total_episodes)
+            progress = _progress_bar(watched_count, item.total_episodes)
 
         synced = (
             item.last_synced_at.strftime("%Y-%m-%d %H:%M")
@@ -641,6 +821,7 @@ def remove(
 def alerts() -> None:
     """Run sync, then list shows with unwatched episodes."""
     init_db()
+    _ensure_tmdb_credentials()
 
     with console.status("[cyan]Syncing tracked items…[/cyan]"):
         try:

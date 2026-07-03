@@ -20,10 +20,19 @@ from tv_tracker.models import (
     WatchedEpisode,
     WatchStatus,
 )
+from tv_tracker.settings_store import get_tmdb_access_token, get_tmdb_api_key
 
 VALID_SOURCES = ("tmdb", "jikan")
 VALID_MEDIA_TYPES = ("movie", "show")
 VALID_STATUSES = ("planning", "watching", "completed", "on_hold", "dropped")
+
+
+def _make_tmdb_client() -> TMDBClient:
+    """Create a TMDBClient using credentials stored in the database."""
+    return TMDBClient(
+        api_key=get_tmdb_api_key(),
+        access_token=get_tmdb_access_token(),
+    )
 
 
 @dataclass
@@ -42,6 +51,20 @@ class SyncResult:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class Stats:
+    """Aggregate counts of tracked items by status and media type."""
+
+    total: int = 0
+    planning: int = 0
+    watching: int = 0
+    completed: int = 0
+    on_hold: int = 0
+    dropped: int = 0
+    movies: int = 0
+    shows: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
@@ -53,7 +76,7 @@ def search(query: str, media_type: str | None = None) -> SearchResponse:
 
 
 async def _search(query: str, media_type: str | None) -> SearchResponse:
-    async with TMDBClient() as tmdb, JikanClient() as jikan:
+    async with _make_tmdb_client() as tmdb, JikanClient() as jikan:
         tasks: list = []
         labels: list[str] = []
 
@@ -93,7 +116,7 @@ def fetch_details(source: str, external_id: str) -> ShowDetails | MovieDetails:
 
 
 async def _fetch_details(source: str, external_id: str) -> ShowDetails | MovieDetails:
-    async with TMDBClient() as tmdb, JikanClient() as jikan:
+    async with _make_tmdb_client() as tmdb, JikanClient() as jikan:
         return await _fetch_details_with_clients(source, external_id, tmdb, jikan)
 
 
@@ -137,7 +160,7 @@ async def _fetch_season_episodes(
 ) -> list[EpisodeInfo]:
     src = source.lower()
     if src == "tmdb":
-        async with TMDBClient() as tmdb:
+        async with _make_tmdb_client() as tmdb:
             season = await tmdb.get_tv_season(external_id, season_number)
             return season.episodes
     if src == "jikan":
@@ -443,7 +466,7 @@ async def _fetch_all_details(items: list[_SyncItemData]) -> list[_SyncFetchResul
     rate-limiting and caching work across the entire sync run.
     """
     results: list[_SyncFetchResult] = []
-    async with TMDBClient() as tmdb, JikanClient() as jikan:
+    async with _make_tmdb_client() as tmdb, JikanClient() as jikan:
         for item in items:
             try:
                 details = await _fetch_details_with_clients(
@@ -538,3 +561,33 @@ def get_shows_with_unwatched_episodes() -> list[TrackedItem]:
             .all()
         )
         return items
+
+
+def get_stats() -> Stats:
+    """Return aggregate counts of tracked items grouped by status and type."""
+    with session_scope() as session:
+        total = session.query(TrackedItem).count()
+        movies = (
+            session.query(TrackedItem).filter(TrackedItem.media_type == MediaType.MOVIE).count()
+        )
+        shows = (
+            session.query(TrackedItem).filter(TrackedItem.media_type == MediaType.SHOW).count()
+        )
+        status_counts: dict[WatchStatus, int] = {}
+        for row in (
+            session.query(TrackedItem.status, func.count(TrackedItem.id))
+            .group_by(TrackedItem.status)
+            .all()
+        ):
+            status_counts[row[0]] = row[1]
+
+    return Stats(
+        total=total,
+        movies=movies,
+        shows=shows,
+        planning=status_counts.get(WatchStatus.PLANNING, 0),
+        watching=status_counts.get(WatchStatus.WATCHING, 0),
+        completed=status_counts.get(WatchStatus.COMPLETED, 0),
+        on_hold=status_counts.get(WatchStatus.ON_HOLD, 0),
+        dropped=status_counts.get(WatchStatus.DROPPED, 0),
+    )

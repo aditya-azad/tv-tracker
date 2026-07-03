@@ -17,6 +17,26 @@ from tv_tracker.models import MediaType, Source
 JSONDict = dict[str, Any]
 Params = Mapping[str, str | int | float | bool | None]
 
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Parse the ``Retry-After`` header (seconds or HTTP-date) into seconds."""
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    # HTTP-date format per RFC 7231.
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(value)
+        delta = dt.timestamp() - time.time()
+        return max(0.0, delta)
+    except (TypeError, ValueError):
+        return None
+
 # ---------------------------------------------------------------------------
 # Shared data structures (normalised across TMDB and Jikan)
 # ---------------------------------------------------------------------------
@@ -166,10 +186,18 @@ class BaseAPIClient:
         cache_ttl: int | None = None,
         timeout: float | None = None,
         headers: dict[str, str] | None = None,
+        max_retries: int | None = None,
+        retry_backoff_base: float | None = None,
     ) -> None:
         rl = rate_limit or settings.tmdb_rate_limit
         self._rate_limiter: RateLimiter = RateLimiter(rl.max_per_second, rl.max_per_minute)
         self._cache: TTLCache = TTLCache(cache_ttl or settings.cache_ttl)
+        self._max_retries: int = max_retries if max_retries is not None else settings.max_retries
+        self._retry_backoff_base: float = (
+            retry_backoff_base
+            if retry_backoff_base is not None
+            else settings.retry_backoff_base
+        )
         self._client: httpx.AsyncClient = httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout or settings.timeout,
@@ -177,18 +205,45 @@ class BaseAPIClient:
         )
 
     async def _get(self, path: str, params: Params | None = None) -> JSONDict:
-        """Fetch JSON from *path*, using the cache and respecting rate limits."""
+        """Fetch JSON from *path*, using the cache and respecting rate limits.
+
+        Retries on HTTP 429 and 5xx responses with exponential backoff,
+        honouring the ``Retry-After`` header when present.
+        """
         key = self._cache_key(path, params)
         cached = self._cache.get(key)
         if cached is not None:
             return cached  # type: ignore[return-value]
 
         await self._rate_limiter.acquire()
-        response = await self._client.get(path, params=dict(params) if params else None)
-        response.raise_for_status()
-        data: JSONDict = response.json()  # type: ignore[assignment]
-        self._cache.set(key, data)
-        return data
+
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            response = await self._client.get(path, params=dict(params) if params else None)
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < self._max_retries:
+                    retry_after = _parse_retry_after(response)
+                    delay = retry_after if retry_after is not None else (
+                        self._retry_backoff_base * (2**attempt)
+                    )
+                    await asyncio.sleep(delay)
+                    # Re-acquire the rate limiter slot after the backoff sleep.
+                    await self._rate_limiter.acquire()
+                    last_exc = httpx.HTTPStatusError(
+                        f"HTTP {response.status_code}", request=response.request,
+                        response=response,
+                    )
+                    continue
+                response.raise_for_status()
+
+            response.raise_for_status()
+            data: JSONDict = response.json()  # type: ignore[assignment]
+            self._cache.set(key, data)
+            return data
+
+        # All retries exhausted — raise the last recorded exception.
+        assert last_exc is not None
+        raise last_exc
 
     def _cache_key(self, path: str, params: Params | None) -> str:
         if not params:
