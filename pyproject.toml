@@ -1,18 +1,18 @@
 [project]
 name = "tv-tracker"
 version = "0.1.0"
-description = "A CLI tool for tracking movies and shows (including anime)"
+description = "A TUI tool for tracking movies and shows (including anime)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
     "rich>=15.0.0",
     "sqlalchemy>=2.0.51",
-    "typer>=0.26.8",
+    "textual>=3.0.0",
 ]
 
 [project.scripts]
-tv-tracker = "tv_tracker.cli:app"
+tv-tracker = "tv_tracker.tui.app:run"
 
 [dependency-groups]
 dev = [

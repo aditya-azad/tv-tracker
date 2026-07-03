@@ -37,6 +37,7 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
 # ---------------------------------------------------------------------------
 # Shared data structures (normalised across TMDB and Jikan)
 # ---------------------------------------------------------------------------
@@ -194,9 +195,7 @@ class BaseAPIClient:
         self._cache: TTLCache = TTLCache(cache_ttl or settings.cache_ttl)
         self._max_retries: int = max_retries if max_retries is not None else settings.max_retries
         self._retry_backoff_base: float = (
-            retry_backoff_base
-            if retry_backoff_base is not None
-            else settings.retry_backoff_base
+            retry_backoff_base if retry_backoff_base is not None else settings.retry_backoff_base
         )
         self._client: httpx.AsyncClient = httpx.AsyncClient(
             base_url=base_url,
@@ -223,14 +222,17 @@ class BaseAPIClient:
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt < self._max_retries:
                     retry_after = _parse_retry_after(response)
-                    delay = retry_after if retry_after is not None else (
-                        self._retry_backoff_base * (2**attempt)
+                    delay = (
+                        retry_after
+                        if retry_after is not None
+                        else (self._retry_backoff_base * (2**attempt))
                     )
                     await asyncio.sleep(delay)
                     # Re-acquire the rate limiter slot after the backoff sleep.
                     await self._rate_limiter.acquire()
                     last_exc = httpx.HTTPStatusError(
-                        f"HTTP {response.status_code}", request=response.request,
+                        f"HTTP {response.status_code}",
+                        request=response.request,
                         response=response,
                     )
                     continue

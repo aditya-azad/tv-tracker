@@ -465,6 +465,80 @@ def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedI
     return item, target_season, target_episode
 
 
+def mark_all_watched(item_id: int) -> tuple[TrackedItem, int]:
+    """Mark every episode of a show (or a movie itself) as watched.
+
+    For shows, fetches the full episode structure from the API and inserts
+    ``WatchedEpisode`` rows for every episode not already marked.  For
+    movies, marks the movie as watched (if not already).  In both cases the
+    watch status is set to ``COMPLETED``.
+
+    Returns ``(item, newly_marked)`` where *newly_marked* is the number of
+    episodes/movie newly recorded as watched (0 when already fully watched).
+    Raises ``ValueError`` if the item doesn't exist or its episode data
+    can't be loaded.
+    """
+    with session_scope() as session:
+        item = session.get(TrackedItem, item_id)
+        if item is None:
+            raise ValueError(f"No tracked item with ID {item_id}")
+        is_movie = item.media_type == MediaType.MOVIE
+        source = item.source.value
+        external_id = item.external_id
+        title = item.title
+        watched = {
+            (we.season_number, we.episode_number)
+            for we in session.query(WatchedEpisode).filter_by(tracked_item_id=item_id)
+        }
+
+    if is_movie:
+        newly_marked = 0
+        if (_MOVIE_SEASON, _MOVIE_EPISODE) not in watched:
+            with session_scope() as session:
+                session.add(
+                    WatchedEpisode(
+                        tracked_item_id=item_id,
+                        season_number=_MOVIE_SEASON,
+                        episode_number=_MOVIE_EPISODE,
+                    )
+                )
+            newly_marked = 1
+    else:
+        details = fetch_details(source, external_id, "show")
+        if not isinstance(details, ShowDetails):
+            raise ValueError(f"Could not load episode data for '{title}'.")
+
+        seasons = sorted(
+            (s for s in details.seasons if s.season_number > 0 and s.episode_count > 0),
+            key=lambda s: s.season_number,
+        )
+
+        to_add: list[tuple[int, int]] = []
+        for s in seasons:
+            for ep_num in range(1, s.episode_count + 1):
+                if (s.season_number, ep_num) not in watched:
+                    to_add.append((s.season_number, ep_num))
+
+        if to_add:
+            with session_scope() as session:
+                for season_number, episode_number in to_add:
+                    session.add(
+                        WatchedEpisode(
+                            tracked_item_id=item_id,
+                            season_number=season_number,
+                            episode_number=episode_number,
+                        )
+                    )
+        newly_marked = len(to_add)
+
+    with session_scope() as session:
+        item = session.get(TrackedItem, item_id)
+        if item is None:
+            raise ValueError(f"No tracked item with ID {item_id}")
+        item.status = WatchStatus.COMPLETED
+        return item, newly_marked
+
+
 def unmark_watched(item_id: int, season: int | None = None, episode: int | None = None) -> str:
     """Remove the watched mark from a movie or episode.
 
@@ -720,9 +794,7 @@ def get_stats() -> Stats:
         movies = (
             session.query(TrackedItem).filter(TrackedItem.media_type == MediaType.MOVIE).count()
         )
-        shows = (
-            session.query(TrackedItem).filter(TrackedItem.media_type == MediaType.SHOW).count()
-        )
+        shows = session.query(TrackedItem).filter(TrackedItem.media_type == MediaType.SHOW).count()
         status_counts: dict[WatchStatus, int] = {}
         for row in (
             session.query(TrackedItem.status, func.count(TrackedItem.id))

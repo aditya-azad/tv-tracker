@@ -1,25 +1,28 @@
 # TV Tracker
 
-A command-line tool for tracking movies and shows from the terminal. Search across [TMDB](https://www.themoviedb.org/) and [Jikan](https://jikan.moe/) (MyAnimeList), build a watch list, mark episodes and movies as watched, and get alerts when new episodes are available.
+A terminal user interface (TUI) for tracking movies and shows. Search across [TMDB](https://www.themoviedb.org/) and [Jikan](https://jikan.moe/) (MyAnimeList), build a watch list, mark episodes and movies as watched, and sync fresh data — all from an interactive, keyboard-driven interface built with [Textual](https://textual.textualize.io/).
 
 ## Features
 
+- **Interactive TUI** — tabbed interface with keyboard navigation, no command-line flags needed
 - **Multi-source search** — query TMDB (movies & TV) and Jikan (anime) at the same time
-- **Tracking** — add movies and shows to a local watch list with statuses: *planning*, *watching*, *completed*, *on hold*, *dropped*
-- **Episode-level tracking** — mark individual episodes as watched and see progress per show
+- **Scroll-to-add** — search results appear in a scrollable table; press **Enter** on any result to add it to your tracking list
+- **Episode-level tracking** — open any tracked show, browse seasons and episodes, mark individual episodes as watched/unwatched with a single key
+- **Mark next episode** — press **n** to instantly mark the next unwatched episode as watched
+- **Status management** — cycle through watch statuses (planning, watching, completed, on hold, dropped) with a single key
 - **Dashboard** — an at-a-glance view of currently watching, unwatched episodes, and recently completed items
-- **On-demand sync** — the `alerts` command syncs fresh data from the APIs, then lists shows with unwatched episodes
+- **On-demand sync** — sync fresh data from the APIs with a single button press
 
 ## Requirements
 
-- Python ≥ 3.13
+- Python >= 3.13
 - A free [TMDB API key](https://developer.themoviedb.org/docs) (Jikan requires no key)
 
 ## Installation
 
 ### Global (recommended)
 
-Install the CLI globally as an editable tool so the `tv-tracker` command is
+Install the TUI globally as an editable tool so the `tv-tracker` command is
 available from any directory, while source edits are picked up on the next
 invocation — no reinstall needed:
 
@@ -36,37 +39,78 @@ clone location. To remove the tool later: `uv tool uninstall tv-tracker`.
 ```bash
 git clone <repo-url> && cd tv-tracker
 uv sync
-uv run tv-tracker --help
+uv run tv-tracker
 ```
 
 ## Usage
 
+Launch the TUI:
+
 ```bash
-tv-tracker                                      # open dashboard (cached data, no sync)
-tv-tracker search "breaking bad"                # search TMDB & Jikan
-tv-tracker search "cowboy bebop" --type show    # filter by type
-tv-tracker details tmdb 1396                     # view title details
-tv-tracker details tmdb 1396 --season 1          # list episodes in a season
-tv-tracker add tmdb 1396                         # add to tracking list
-tv-tracker add tmdb 81349 --type show            # add when a TMDB id matches both a movie and a show
-tv-tracker list                                  # list all tracked items
-tv-tracker list --status watching                # filter by status
-tv-tracker status 1 watching                     # update watch status
-tv-tracker watch 1                               # mark a movie as watched
-tv-tracker watch 1 --season 1 --episode 1        # mark an episode as watched
-tv-tracker watch 1 --episode next                # mark the next unwatched episode
-tv-tracker unwatch 1 --season 1 --episode 1      # remove a watched mark
-tv-tracker remove 1                              # remove from tracking list
-tv-tracker alerts                                # sync, then list unwatched episodes
-tv-tracker config                                # show TMDB credential status
-tv-tracker config --set-key                      # set or update the TMDB API key
-tv-tracker config --set-token                    # set or update the TMDB access token
+tv-tracker
 ```
 
-The first time you run a command that needs TMDB (search, details, add, alerts),
-you will be prompted to enter your TMDB API key. The key is stored in the local
-database so you only need to enter it once. Use `tv-tracker config --set-key` to
-update it later.
+### Tabs & Navigation
+
+| Key       | Action                          |
+|-----------|---------------------------------|
+| `1`       | Switch to Dashboard tab         |
+| `2`       | Switch to Search tab            |
+| `3`       | Switch to Tracked tab           |
+| `4`       | Switch to Config tab            |
+| `q`       | Quit                            |
+| `Tab`     | Cycle through tabs              |
+| `Enter`   | Activate/Select row or button   |
+| `Arrows`  | Navigate tables and lists       |
+
+### Dashboard Tab
+
+Shows stats summary, currently watching shows with progress bars, unwatched
+episodes, and recently completed items. Press the **Sync & Check Alerts**
+button to fetch fresh data from the APIs.
+
+### Search Tab
+
+1. Type a query in the search input and press **Enter** (or click **Search**)
+2. Filter by type (All / Movies / Shows) using the dropdown
+3. Scroll through results with arrow keys
+4. Press **Enter** on any result to add it to your tracking list
+
+### Tracked Tab
+
+1. Filter by status using the dropdown (All / Planning / Watching / etc.)
+2. Scroll through your tracked items
+3. Press **Enter** to open the item detail screen
+4. Press **w** to mark the next unwatched episode as watched
+5. Press **W** to mark the whole show as watched (all episodes)
+6. Press **r** to remove an item from your tracking list
+
+### Item Detail Screen
+
+Opened from the Tracked tab by pressing **Enter** on an item.
+
+| Key       | Action                                    |
+|-----------|-------------------------------------------|
+| `Enter`   | Select a season to load its episodes      |
+| `w` / `u` | Toggle watched/unwatched on an episode    |
+| `W`       | Mark the whole show as watched (all episodes) |
+| `n`       | Mark the next unwatched episode as watched |
+| `s`       | Cycle watch status (planning -> watching -> ...) |
+| `Esc`     | Go back to tracked list                   |
+
+For **shows**: select a season from the seasons table to load its episodes.
+Then select an episode and press **w** to mark it watched or **u** to unwatch.
+
+For **movies**: press **w** to toggle watched status.
+
+### Config Tab
+
+Shows the status of your TMDB API key and access token. Use the **Set API Key**
+and **Set Token** buttons to enter credentials (they'll be masked as you type).
+Use **Clear** buttons to remove stored credentials.
+
+The first time you use search, you'll be notified if no TMDB API key is set.
+Open the Config tab (press **4**) to add it.
 
 ### Statuses
 
@@ -80,9 +124,9 @@ update it later.
 
 ## Configuration
 
-TMDB credentials are stored in the local database. Use `tv-tracker config` to
-view their status, and `tv-tracker config --set-key` / `--set-token` to update
-them. The following environment variables control non-secret settings:
+TMDB credentials are stored in the local database. Use the Config tab to
+view their status and update them. The following environment variables control
+non-secret settings:
 
 | Variable              | Default                          | Description                         |
 |-----------------------|----------------------------------|-------------------------------------|
@@ -102,7 +146,7 @@ uv run pyrefly check .       # type check
 
 ## Tech Stack
 
-- **CLI**: [Typer](https://typer.tiangolo.com/) + [Rich](https://rich.readthedocs.io/)
+- **TUI**: [Textual](https://textual.textualize.io/) (built on [Rich](https://rich.readthedocs.io/))
 - **HTTP**: [httpx](https://www.python-httpx.org/) (async with rate limiting & caching)
 - **ORM**: [SQLAlchemy](https://www.sqlalchemy.org/) 2.x
 - **Database**: SQLite (local, zero-config)

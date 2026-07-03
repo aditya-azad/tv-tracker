@@ -1,4 +1,4 @@
-from tv_tracker.cli import app
+from tv_tracker.tui.app import run
 
 if __name__ == "__main__":
-    app()
+    run()

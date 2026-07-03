@@ -1,5 +1,5 @@
 """Allow running with `python -m tv_tracker`."""
 
-from tv_tracker.cli import app
+from tv_tracker.tui.app import run
 
-app()
+run()
