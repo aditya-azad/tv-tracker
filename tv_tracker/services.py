@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from tv_tracker.api import EpisodeInfo, MovieDetails, SearchResult, ShowDetails
@@ -29,6 +31,14 @@ class SearchResponse:
     """Results from a multi-source search, including any source errors."""
 
     results: list[SearchResult] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SyncResult:
+    """Summary of an on-demand sync run."""
+
+    items_synced: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -83,27 +93,36 @@ def fetch_details(source: str, external_id: str) -> ShowDetails | MovieDetails:
 
 
 async def _fetch_details(source: str, external_id: str) -> ShowDetails | MovieDetails:
+    async with TMDBClient() as tmdb, JikanClient() as jikan:
+        return await _fetch_details_with_clients(source, external_id, tmdb, jikan)
+
+
+async def _fetch_details_with_clients(
+    source: str,
+    external_id: str,
+    tmdb: TMDBClient,
+    jikan: JikanClient,
+) -> ShowDetails | MovieDetails:
+    """Fetch details using pre-existing client instances (used by sync)."""
     src = source.lower()
     if src == "tmdb":
-        async with TMDBClient() as tmdb:
-            movie_r, tv_r = await asyncio.gather(
-                tmdb.get_movie(external_id),
-                tmdb.get_tv(external_id),
-                return_exceptions=True,
-            )
-            if isinstance(movie_r, MovieDetails):
-                return movie_r
-            if isinstance(tv_r, ShowDetails):
-                return tv_r
-            if isinstance(tv_r, Exception):
-                raise tv_r
-            if isinstance(movie_r, Exception):
-                raise movie_r
-            raise ValueError(f"Title {external_id} not found on TMDB")
+        movie_r, tv_r = await asyncio.gather(
+            tmdb.get_movie(external_id),
+            tmdb.get_tv(external_id),
+            return_exceptions=True,
+        )
+        if isinstance(movie_r, MovieDetails):
+            return movie_r
+        if isinstance(tv_r, ShowDetails):
+            return tv_r
+        if isinstance(tv_r, Exception):
+            raise tv_r
+        if isinstance(movie_r, Exception):
+            raise movie_r
+        raise ValueError(f"Title {external_id} not found on TMDB")
 
     if src == "jikan":
-        async with JikanClient() as jikan:
-            return await jikan.get_anime(external_id)
+        return await jikan.get_anime(external_id)
 
     raise ValueError(f"Unknown source: {source!r}")
 
@@ -378,3 +397,144 @@ def find_tracked_item(source: str, external_id: str) -> TrackedItem | None:
             .first()
         )
         return item
+
+
+# ---------------------------------------------------------------------------
+# On-demand sync
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SyncItemData:
+    """Lightweight snapshot of a tracked item needed for syncing."""
+
+    id: int
+    source: str
+    external_id: str
+
+
+@dataclass
+class _SyncFetchResult:
+    """Result of fetching fresh details for one tracked item during sync."""
+
+    item_id: int
+    details: ShowDetails | MovieDetails | None = None
+    error: str | None = None
+
+
+def _get_sync_items() -> list[_SyncItemData]:
+    """Return snapshots of items to sync (status: watching or planning)."""
+    with session_scope() as session:
+        items = (
+            session.query(TrackedItem)
+            .filter(TrackedItem.status.in_([WatchStatus.WATCHING, WatchStatus.PLANNING]))
+            .all()
+        )
+        return [
+            _SyncItemData(id=item.id, source=item.source.value, external_id=item.external_id)
+            for item in items
+        ]
+
+
+async def _fetch_all_details(items: list[_SyncItemData]) -> list[_SyncFetchResult]:
+    """Fetch fresh details for every sync item, sequentially.
+
+    Both API clients are opened once and reused across all items so that
+    rate-limiting and caching work across the entire sync run.
+    """
+    results: list[_SyncFetchResult] = []
+    async with TMDBClient() as tmdb, JikanClient() as jikan:
+        for item in items:
+            try:
+                details = await _fetch_details_with_clients(
+                    item.source, item.external_id, tmdb, jikan
+                )
+                results.append(_SyncFetchResult(item_id=item.id, details=details))
+            except Exception as exc:
+                results.append(_SyncFetchResult(item_id=item.id, error=str(exc)))
+    return results
+
+
+def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
+    """Update tracked item totals from fetched details."""
+    summary = SyncResult()
+    now = datetime.now(UTC)
+
+    with session_scope() as session:
+        for fr in results:
+            item = session.get(TrackedItem, fr.item_id)
+            if item is None:
+                continue
+
+            if fr.error is not None:
+                summary.errors.append(f"{item.title}: {fr.error}")
+                continue
+
+            if fr.details is None:
+                summary.errors.append(f"{item.title}: no details returned")
+                continue
+
+            summary.items_synced += 1
+
+            if isinstance(fr.details, MovieDetails):
+                item.last_synced_at = now
+                continue
+
+            item.total_seasons = fr.details.number_of_seasons or None
+            item.total_episodes = fr.details.number_of_episodes or None
+            item.last_synced_at = now
+
+    return summary
+
+
+def run_sync() -> SyncResult:
+    """Run an on-demand sync of all watching/planning tracked items.
+
+    Fetches fresh data from TMDB/Jikan for each item and updates
+    ``total_seasons``, ``total_episodes``, and ``last_synced_at``.
+    """
+    items = _get_sync_items()
+    if not items:
+        return SyncResult()
+
+    fetch_results = asyncio.run(_fetch_all_details(items))
+    return _process_sync_results(fetch_results)
+
+
+def get_shows_with_unwatched_episodes() -> list[TrackedItem]:
+    """Return shows where the watched episode count is less than the total.
+
+    Only items with ``media_type = show`` and a non-null ``total_episodes``
+    are considered.  Movies are excluded — they are either watched or not.
+    """
+    with session_scope() as session:
+        watched_counts = (
+            session.query(
+                WatchedEpisode.tracked_item_id,
+                func.count(WatchedEpisode.id).label("watched_count"),
+            )
+            .filter(WatchedEpisode.season_number != 0)
+            .group_by(WatchedEpisode.tracked_item_id)
+            .subquery()
+        )
+
+        items = (
+            session.query(TrackedItem)
+            .outerjoin(
+                watched_counts,
+                watched_counts.c.tracked_item_id == TrackedItem.id,
+            )
+            .options(selectinload(TrackedItem.watched_episodes))
+            .filter(
+                TrackedItem.media_type == MediaType.SHOW,
+                TrackedItem.total_episodes.is_not(None),
+                TrackedItem.total_episodes > 0,
+            )
+            .filter(
+                (watched_counts.c.watched_count.is_(None))
+                | (watched_counts.c.watched_count < TrackedItem.total_episodes)
+            )
+            .order_by(TrackedItem.title)
+            .all()
+        )
+        return items

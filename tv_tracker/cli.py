@@ -24,10 +24,12 @@ from tv_tracker.services import (
     find_tracked_item,
     get_currently_watching,
     get_recently_completed,
+    get_shows_with_unwatched_episodes,
     get_watched_episode_keys,
     list_tracked_items,
     mark_watched,
     remove_tracked_item,
+    run_sync,
     set_watch_status,
     unmark_watched,
 )
@@ -136,7 +138,7 @@ def _next_episode_label(item: TrackedItem) -> str:
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
-    """Open the dashboard (triggers async sync)."""
+    """Open the dashboard (uses cached data, no sync)."""
     if ctx.invoked_subcommand is not None:
         return
     init_db()
@@ -149,10 +151,12 @@ def main(ctx: typer.Context) -> None:
     )
 
     _render_currently_watching()
+    _render_unwatched_shows()
     _render_recently_completed()
 
     console.print(
-        "\n[dim]Run [/dim][bold]tv-tracker --help[/bold][dim] to see available commands.[/dim]"
+        "\n[dim]Run [/dim][bold]tv-tracker alerts[/bold]"
+        "[dim] to sync and check for new content.[/dim]"
     )
 
 
@@ -239,6 +243,45 @@ def _render_recently_completed() -> None:
         )
 
     console.print(table)
+
+
+def _build_unwatched_table(items: list[TrackedItem]) -> Table:
+    """Build a Rich table showing shows with unwatched episodes."""
+    table = Table(
+        title="Unwatched Episodes",
+        title_style="bold yellow",
+        border_style="yellow",
+    )
+    table.add_column("ID", style="dim", width=4)
+    table.add_column("Title", min_width=20)
+    table.add_column("Progress", width=12, justify="right")
+    table.add_column("Unwatched", width=10, justify="right")
+
+    for item in items:
+        watched_count = len(item.watched_episodes)
+        total = item.total_episodes or 0
+        unwatched = total - watched_count
+        table.add_row(
+            str(item.id),
+            item.title,
+            _progress_text(watched_count, total),
+            f"[yellow]{unwatched}[/yellow]",
+        )
+    return table
+
+
+def _render_unwatched_shows() -> None:
+    """Render the 'Unwatched Episodes' dashboard section (uses cached data)."""
+    try:
+        items = get_shows_with_unwatched_episodes()
+    except Exception:
+        return
+
+    if not items:
+        return
+
+    console.print()
+    console.print(_build_unwatched_table(items))
 
 
 @app.command()
@@ -596,13 +639,33 @@ def remove(
 
 @app.command()
 def alerts() -> None:
-    """List new content alerts. (Phase 4)"""
-    console.print("[yellow]Alerts will be implemented in Phase 4.[/yellow]")
+    """Run sync, then list shows with unwatched episodes."""
+    init_db()
 
+    with console.status("[cyan]Syncing tracked items…[/cyan]"):
+        try:
+            result = run_sync()
+        except Exception as exc:
+            _print_api_error("sync", exc)
+            raise typer.Exit(1) from exc
 
-@app.command()
-def dismiss(
-    alert_id: int = typer.Argument(..., help="Alert ID to dismiss"),
-) -> None:
-    """Dismiss a new content alert. (Phase 4)"""
-    console.print("[yellow]Alert dismissal will be implemented in Phase 4.[/yellow]")
+    console.print(f"[green]Synced {result.items_synced} item(s).[/green]")
+    for err in result.errors:
+        console.print(f"[red]Error: {err}[/red]")
+
+    try:
+        items = get_shows_with_unwatched_episodes()
+    except Exception as exc:
+        _print_api_error("fetch unwatched", exc)
+        raise typer.Exit(1) from exc
+
+    console.print()
+    if not items:
+        console.print("[dim]No unwatched episodes — all caught up![/dim]")
+        return
+
+    console.print(_build_unwatched_table(items))
+    console.print(
+        "\n[dim]Use [/dim][bold]tv-tracker watch <id> --season N --episode M[/bold]"
+        "[dim] to mark episodes as watched.[/dim]"
+    )
