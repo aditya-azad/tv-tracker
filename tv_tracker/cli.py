@@ -515,9 +515,10 @@ def search(
 
     console.print(table)
     console.print(
-        "\n[dim]Use [/dim][bold]tv-tracker details <source> <id>[/bold]"
+        "\n[dim]Use [/dim][bold]tv-tracker details <source> <id> --type <type>[/bold]"
         "[dim] for more info or [/dim]"
-        "[bold]tv-tracker add <source> <id>[/bold][dim] to start tracking.[/dim]"
+        "[bold]tv-tracker add <source> <id> --type <type>[/bold]"
+        "[dim] to start tracking.[/dim]"
     )
 
 
@@ -525,15 +526,22 @@ def search(
 def details(
     source: str = typer.Argument(..., help="tmdb | jikan"),
     external_id: str = typer.Argument(..., help="TMDB id or MAL id"),
+    media_type: str = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="movie | show (required when a TMDB id matches both)",
+    ),
     season: int = typer.Option(None, "--season", "-s", help="Show episodes for a season"),
 ) -> None:
     """View details for a title (seasons, episodes, metadata)."""
     _validate_source(source)
+    _validate_media_type(media_type)
     init_db()
     _ensure_tmdb_credentials()
 
     try:
-        info = fetch_details(source, external_id)
+        info = fetch_details(source, external_id, media_type)
     except Exception as exc:
         _print_api_error("fetch details", exc)
         raise typer.Exit(1) from exc
@@ -633,14 +641,21 @@ def _render_episodes_table(
 def add(
     source: str = typer.Argument(..., help="tmdb | jikan"),
     external_id: str = typer.Argument(..., help="TMDB id or MAL id"),
+    media_type: str = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="movie | show (required when a TMDB id matches both)",
+    ),
 ) -> None:
     """Add a title to your tracking list."""
     _validate_source(source)
+    _validate_media_type(media_type)
     init_db()
     _ensure_tmdb_credentials()
 
     try:
-        item = add_tracked_item(source, external_id)
+        item = add_tracked_item(source, external_id, media_type)
     except ValueError as exc:
         console.print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(1) from exc

@@ -17,9 +17,26 @@ A command-line tool for tracking movies and shows from the terminal. Search acro
 
 ## Installation
 
+### Global (recommended)
+
+Install the CLI globally as an editable tool so the `tv-tracker` command is
+available from any directory, while source edits are picked up on the next
+invocation — no reinstall needed:
+
+```bash
+git clone <repo-url> && cd tv-tracker
+uv tool install --editable .
+```
+
+Data (database, credentials) is stored in `~/.tv-tracker/`, independent of the
+clone location. To remove the tool later: `uv tool uninstall tv-tracker`.
+
+### Local (development only)
+
 ```bash
 git clone <repo-url> && cd tv-tracker
 uv sync
+uv run tv-tracker --help
 ```
 
 ## Usage
@@ -31,6 +48,7 @@ tv-tracker search "cowboy bebop" --type show    # filter by type
 tv-tracker details tmdb 1396                     # view title details
 tv-tracker details tmdb 1396 --season 1          # list episodes in a season
 tv-tracker add tmdb 1396                         # add to tracking list
+tv-tracker add tmdb 81349 --type show            # add when a TMDB id matches both a movie and a show
 tv-tracker list                                  # list all tracked items
 tv-tracker list --status watching                # filter by status
 tv-tracker status 1 watching                     # update watch status

@@ -110,14 +110,22 @@ async def _search(query: str, media_type: str | None) -> SearchResponse:
 # ---------------------------------------------------------------------------
 
 
-def fetch_details(source: str, external_id: str) -> ShowDetails | MovieDetails:
-    """Fetch details for a title from the appropriate API."""
-    return asyncio.run(_fetch_details(source, external_id))
+def fetch_details(
+    source: str, external_id: str, media_type: str | None = None
+) -> ShowDetails | MovieDetails:
+    """Fetch details for a title from the appropriate API.
+
+    *media_type* ("movie" or "show") disambiguates TMDB ids, which have
+    separate namespaces for movies and TV shows.
+    """
+    return asyncio.run(_fetch_details(source, external_id, media_type))
 
 
-async def _fetch_details(source: str, external_id: str) -> ShowDetails | MovieDetails:
+async def _fetch_details(
+    source: str, external_id: str, media_type: str | None = None
+) -> ShowDetails | MovieDetails:
     async with _make_tmdb_client() as tmdb, JikanClient() as jikan:
-        return await _fetch_details_with_clients(source, external_id, tmdb, jikan)
+        return await _fetch_details_with_clients(source, external_id, tmdb, jikan, media_type)
 
 
 async def _fetch_details_with_clients(
@@ -125,15 +133,36 @@ async def _fetch_details_with_clients(
     external_id: str,
     tmdb: TMDBClient,
     jikan: JikanClient,
+    media_type: str | None = None,
 ) -> ShowDetails | MovieDetails:
-    """Fetch details using pre-existing client instances (used by sync)."""
+    """Fetch details using pre-existing client instances (used by sync).
+
+    TMDB movie and TV ids live in separate namespaces, so a single numeric
+    id can identify a *different* movie and a *different* show.  When
+    *media_type* is given only the matching endpoint is queried; otherwise
+    both are tried and, if both succeed, an error is raised asking the
+    caller to disambiguate rather than silently picking the wrong title.
+    """
     src = source.lower()
+    mt = media_type.lower() if media_type else None
+
     if src == "tmdb":
+        if mt == "movie":
+            return await tmdb.get_movie(external_id)
+        if mt == "show":
+            return await tmdb.get_tv(external_id)
+
         movie_r, tv_r = await asyncio.gather(
             tmdb.get_movie(external_id),
             tmdb.get_tv(external_id),
             return_exceptions=True,
         )
+        if isinstance(movie_r, MovieDetails) and isinstance(tv_r, ShowDetails):
+            raise ValueError(
+                f"TMDB id {external_id} matches both a movie "
+                f"({movie_r.title!r}) and a show ({tv_r.title!r}). "
+                "Re-run with --type movie or --type show to choose."
+            )
         if isinstance(movie_r, MovieDetails):
             return movie_r
         if isinstance(tv_r, ShowDetails):
@@ -174,9 +203,12 @@ async def _fetch_season_episodes(
 # ---------------------------------------------------------------------------
 
 
-def add_tracked_item(source: str, external_id: str) -> TrackedItem:
-    """Fetch details for a title and add it to the tracking list."""
-    details = fetch_details(source, external_id)
+def add_tracked_item(source: str, external_id: str, media_type: str | None = None) -> TrackedItem:
+    """Fetch details for a title and add it to the tracking list.
+
+    *media_type* disambiguates TMDB ids that match both a movie and a show.
+    """
+    details = fetch_details(source, external_id, media_type)
 
     src = Source(source.lower())
     if isinstance(details, MovieDetails):
@@ -434,6 +466,7 @@ class _SyncItemData:
     id: int
     source: str
     external_id: str
+    media_type: str
 
 
 @dataclass
@@ -454,7 +487,12 @@ def _get_sync_items() -> list[_SyncItemData]:
             .all()
         )
         return [
-            _SyncItemData(id=item.id, source=item.source.value, external_id=item.external_id)
+            _SyncItemData(
+                id=item.id,
+                source=item.source.value,
+                external_id=item.external_id,
+                media_type=item.media_type.value,
+            )
             for item in items
         ]
 
@@ -470,7 +508,7 @@ async def _fetch_all_details(items: list[_SyncItemData]) -> list[_SyncFetchResul
         for item in items:
             try:
                 details = await _fetch_details_with_clients(
-                    item.source, item.external_id, tmdb, jikan
+                    item.source, item.external_id, tmdb, jikan, item.media_type
                 )
                 results.append(_SyncFetchResult(item_id=item.id, details=details))
             except Exception as exc:
