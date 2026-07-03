@@ -7,7 +7,7 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -199,7 +199,7 @@ class BaseAPIClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def __aenter__(self) -> BaseAPIClient:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
