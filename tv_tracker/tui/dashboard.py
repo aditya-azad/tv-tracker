@@ -1,4 +1,4 @@
-"""Dashboard tab: stats summary, currently watching, unwatched, recently completed."""
+"""Dashboard panes: shows overview and unwatched movies."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from tv_tracker.services import (
     get_recently_completed,
     get_shows_with_unwatched_episodes,
     get_stats,
+    get_unwatched_movies,
     run_sync,
 )
 from tv_tracker.tui.common import (
@@ -20,24 +21,57 @@ from tv_tracker.tui.common import (
     last_watched_label,
     next_episode_label,
     progress_bar,
+    status_badge,
 )
 
 
-class DashboardPane(VerticalScroll):
-    """Dashboard tab showing an at-a-glance overview of tracked items."""
+class _DashboardBase(VerticalScroll):
+    """Shared base for dashboard panes — provides the sync button and logic."""
 
     DEFAULT_CSS = """
-    DashboardPane {
+    _DashboardBase {
         padding: 1 2;
     }
-    DashboardPane Button.sync-button {
+    _DashboardBase Button.sync-button {
         margin-bottom: 1;
     }
-    DashboardPane Static.section-title {
+    _DashboardBase Static.section-title {
         text-style: bold;
         margin-top: 1;
     }
     """
+
+    def _on_sync_pressed(self) -> None:
+        self._run_sync()
+
+    @work(thread=True)
+    def _run_sync(self) -> None:
+        self.app.notify("[cyan]Syncing tracked items…[/cyan]", timeout=2)
+        try:
+            result = run_sync()
+        except Exception as exc:
+            self.app.notify(f"[red]Sync failed:[/red] {exc}", timeout=5)
+            return
+
+        self.app.notify(f"[green]Synced {result.items_synced} item(s).[/green]", timeout=3)
+        for title in result.completed:
+            self.app.notify(
+                f"[cyan]All episodes watched — marked completed:[/cyan] {title}", timeout=5
+            )
+        for title in result.resumed:
+            self.app.notify(f"[cyan]New episodes — resumed watching:[/cyan] {title}", timeout=5)
+        for err in result.errors:
+            self.app.notify(f"[red]Error: {err}[/red]", timeout=5)
+
+        self.app.call_from_thread(self.refresh_data)
+
+    def refresh_data(self) -> None:
+        """Reload all dashboard data from the database (overridden by subclasses)."""
+        raise NotImplementedError
+
+
+class ShowsDashboardPane(_DashboardBase):
+    """Shows dashboard — currently watching, unwatched episodes, recently completed."""
 
     def compose(self) -> ComposeResult:
         yield Button("Sync & Check Alerts", id="sync-btn", classes="sync-button")
@@ -53,18 +87,22 @@ class DashboardPane(VerticalScroll):
         self._setup_tables()
         self.refresh_data()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "sync-btn":
+            self._on_sync_pressed()
+
     def _setup_tables(self) -> None:
         watching = self.query_one("#watching-table", DataTable)
-        watching.add_columns("ID", "Title", "Type", "Progress", "Last", "Next")
+        watching.add_columns("ID", "Title", "Progress", "Last", "Next")
 
         unwatched = self.query_one("#unwatched-table", DataTable)
         unwatched.add_columns("ID", "Title", "Progress", "Unwatched")
 
         completed = self.query_one("#completed-table", DataTable)
-        completed.add_columns("ID", "Title", "Type", "Progress", "Updated")
+        completed.add_columns("ID", "Title", "Progress", "Updated")
 
     def refresh_data(self) -> None:
-        """Reload all dashboard data from the database."""
+        """Reload all shows dashboard data from the database."""
         self._load_stats()
         self._load_watching()
         self._load_unwatched()
@@ -85,7 +123,7 @@ class DashboardPane(VerticalScroll):
             return
 
         parts = [
-            f"[bold]{stats.total}[/bold] tracked",
+            f"[bold]{stats.shows}[/bold] shows",
             f"[green]{stats.watching}[/green] watching",
             f"[blue]{stats.planning}[/blue] planning",
             f"[cyan]{stats.completed}[/cyan] completed",
@@ -95,34 +133,21 @@ class DashboardPane(VerticalScroll):
         if stats.dropped:
             parts.append(f"[red]{stats.dropped}[/red] dropped")
 
-        type_parts: list[str] = []
-        if stats.movies:
-            type_parts.append(f"{stats.movies} movie{'s' if stats.movies != 1 else ''}")
-        if stats.shows:
-            type_parts.append(f"{stats.shows} show{'s' if stats.shows != 1 else ''}")
-
-        summary = "  ".join(parts)
-        if type_parts:
-            summary += f"  [dim]({', '.join(type_parts)})[/dim]"
-        stats_label.update(summary)
+        stats_label.update("  ".join(parts))
 
     def _load_watching(self) -> None:
         table = self.query_one("#watching-table", DataTable)
         table.clear()
         items = get_currently_watching()
         for item in items:
-            if item.media_type == MediaType.MOVIE:
-                progress = item_progress(item)
-                last = last_watched_label(item)
-                next_ep = "[dim]—[/dim]"
-            else:
-                progress = progress_bar(len(item.watched_episodes), item.total_episodes)
-                last = last_watched_label(item)
-                next_ep = next_episode_label(item)
+            if item.media_type != MediaType.SHOW:
+                continue
+            progress = progress_bar(len(item.watched_episodes), item.total_episodes)
+            last = last_watched_label(item)
+            next_ep = next_episode_label(item)
             table.add_row(
                 str(item.id),
                 item.title,
-                item.media_type.value,
                 progress,
                 last,
                 next_ep,
@@ -151,37 +176,83 @@ class DashboardPane(VerticalScroll):
         table.clear()
         items = get_recently_completed()
         for item in items:
+            if item.media_type != MediaType.SHOW:
+                continue
             progress = item_progress(item)
             updated = item.updated_at.strftime("%Y-%m-%d") if item.updated_at else "[dim]—[/dim]"
             table.add_row(
                 str(item.id),
                 item.title,
-                item.media_type.value,
                 progress,
                 updated,
             )
 
+
+class MoviesDashboardPane(_DashboardBase):
+    """Movies dashboard — only movies that haven't been watched yet."""
+
+    def compose(self) -> ComposeResult:
+        yield Button("Sync & Check Alerts", id="sync-btn", classes="sync-button")
+        yield Static(id="stats")
+        yield Static("Unwatched Movies", classes="section-title", markup=True)
+        yield DataTable(id="movies-table", cursor_type="row")
+
+    def on_mount(self) -> None:
+        self._setup_tables()
+        self.refresh_data()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "sync-btn":
-            self._run_sync()
+            self._on_sync_pressed()
 
-    @work(thread=True)
-    def _run_sync(self) -> None:
-        self.app.notify("[cyan]Syncing tracked items…[/cyan]", timeout=2)
+    def _setup_tables(self) -> None:
+        table = self.query_one("#movies-table", DataTable)
+        table.add_columns("ID", "Title", "Status", "Added")
+
+    def refresh_data(self) -> None:
+        """Reload movies dashboard data from the database."""
+        self._load_stats()
+        self._load_movies()
+
+    def _load_stats(self) -> None:
         try:
-            result = run_sync()
-        except Exception as exc:
-            self.app.notify(f"[red]Sync failed:[/red] {exc}", timeout=5)
+            stats = get_stats()
+        except Exception:
             return
 
-        self.app.notify(f"[green]Synced {result.items_synced} item(s).[/green]", timeout=3)
-        for title in result.completed:
-            self.app.notify(
-                f"[cyan]All episodes watched — marked completed:[/cyan] {title}", timeout=5
+        stats_label = self.query_one("#stats", Static)
+        if stats.movies == 0:
+            stats_label.update(
+                "[dim]No tracked movies yet. Use the [/dim][bold]Search[/bold]"
+                "[dim] tab to find titles to track.[/dim]"
             )
-        for title in result.resumed:
-            self.app.notify(f"[cyan]New episodes — resumed watching:[/cyan] {title}", timeout=5)
-        for err in result.errors:
-            self.app.notify(f"[red]Error: {err}[/red]", timeout=5)
+            return
 
-        self.app.call_from_thread(self.refresh_data)
+        try:
+            unwatched = len(get_unwatched_movies())
+        except Exception:
+            unwatched = 0
+        watched = stats.movies - unwatched
+
+        parts = [
+            f"[bold]{stats.movies}[/bold] movies",
+            f"[yellow]{unwatched}[/yellow] unwatched",
+            f"[cyan]{watched}[/cyan] watched",
+        ]
+        stats_label.update("  ".join(parts))
+
+    def _load_movies(self) -> None:
+        table = self.query_one("#movies-table", DataTable)
+        table.clear()
+        try:
+            items = get_unwatched_movies()
+        except Exception:
+            return
+        for item in items:
+            added = item.created_at.strftime("%Y-%m-%d") if item.created_at else "[dim]—[/dim]"
+            table.add_row(
+                str(item.id),
+                item.title,
+                status_badge(item.status),
+                added,
+            )

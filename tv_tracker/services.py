@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from tv_tracker.api import EpisodeInfo, MovieDetails, SearchResult, ShowDetails
@@ -840,6 +840,30 @@ def get_shows_with_unwatched_episodes() -> list[TrackedItem]:
             .filter(
                 (watched_counts.c.watched_count.is_(None))
                 | (watched_counts.c.watched_count < TrackedItem.total_episodes)
+            )
+            .order_by(TrackedItem.title)
+            .all()
+        )
+        return items
+
+
+def get_unwatched_movies() -> list[TrackedItem]:
+    """Return movies that have not been marked as watched.
+
+    A movie is considered watched when it has the sentinel
+    ``(season 0, episode 0)`` :class:`WatchedEpisode` row.
+    """
+    with session_scope() as session:
+        watched_ids = (
+            session.query(WatchedEpisode.tracked_item_id)
+            .filter(WatchedEpisode.season_number == _MOVIE_SEASON)
+            .subquery()
+        )
+        items = (
+            session.query(TrackedItem)
+            .filter(
+                TrackedItem.media_type == MediaType.MOVIE,
+                ~TrackedItem.id.in_(select(watched_ids.c.tracked_item_id)),
             )
             .order_by(TrackedItem.title)
             .all()

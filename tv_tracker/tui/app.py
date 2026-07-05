@@ -12,7 +12,7 @@ from tv_tracker import __version__
 from tv_tracker.db import init_db
 from tv_tracker.settings_store import get_tmdb_access_token, get_tmdb_api_key
 from tv_tracker.tui.config_screen import ConfigPane
-from tv_tracker.tui.dashboard import DashboardPane
+from tv_tracker.tui.dashboard import MoviesDashboardPane, ShowsDashboardPane
 from tv_tracker.tui.item_detail import ItemDetailScreen
 from tv_tracker.tui.search import SearchPane
 from tv_tracker.tui.tracked import TrackedPane
@@ -32,16 +32,18 @@ class TVTrackerApp(App):
     """
 
     BINDINGS: ClassVar = [
-        Binding("1", "switch_tab('dashboard')", "Dashboard", show=True),
-        Binding("2", "switch_tab('search')", "Search", show=True),
-        Binding("3", "switch_tab('tracked')", "Tracked", show=True),
-        Binding("4", "switch_tab('config')", "Config", show=True),
+        Binding("1", "switch_tab('shows')", "Shows", show=True),
+        Binding("2", "switch_tab('movies')", "Movies", show=True),
+        Binding("3", "switch_tab('search')", "Search", show=True),
+        Binding("4", "switch_tab('tracked')", "Tracked", show=True),
+        Binding("5", "switch_tab('config')", "Config", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
     def compose(self) -> ComposeResult:
         with TabbedContent(id="main-tabs"):
-            yield TabPane("Dashboard", DashboardPane(), id="dashboard")
+            yield TabPane("Shows", ShowsDashboardPane(), id="shows")
+            yield TabPane("Movies", MoviesDashboardPane(), id="movies")
             yield TabPane("Search", SearchPane(), id="search")
             yield TabPane("Tracked", TrackedPane(), id="tracked")
             yield TabPane("Config", ConfigPane(), id="config")
@@ -66,7 +68,7 @@ class TVTrackerApp(App):
 
     def refresh_all_tabs(self) -> None:
         """Refresh data in all tabs that support it."""
-        for tab in [DashboardPane, SearchPane, TrackedPane, ConfigPane]:
+        for tab in [ShowsDashboardPane, MoviesDashboardPane, SearchPane, TrackedPane, ConfigPane]:
             pane = self.query_one(tab)
             if hasattr(pane, "refresh_data"):
                 pane.refresh_data()

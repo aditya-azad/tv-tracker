@@ -54,20 +54,26 @@ tv-tracker
 
 | Key       | Action                          |
 |-----------|---------------------------------|
-| `1`       | Switch to Dashboard tab         |
-| `2`       | Switch to Search tab            |
-| `3`       | Switch to Tracked tab           |
-| `4`       | Switch to Config tab            |
+| `1`       | Switch to Shows tab             |
+| `2`       | Switch to Movies tab            |
+| `3`       | Switch to Search tab            |
+| `4`       | Switch to Tracked tab           |
+| `5`       | Switch to Config tab            |
 | `q`       | Quit                            |
 | `Tab`     | Cycle through tabs              |
 | `Enter`   | Activate/Select row or button   |
 | `Arrows`  | Navigate tables and lists       |
 
-### Dashboard Tab
+### Shows Tab
 
 Shows stats summary, currently watching shows with progress bars, unwatched
 episodes, and recently completed items. Press the **Sync & Check Alerts**
 button to fetch fresh data from the APIs.
+
+### Movies Tab
+
+Shows movies that haven't been watched yet, with their status and date added.
+Press the **Sync & Check Alerts** button to fetch fresh data from the APIs.
 
 ### Search Tab
 
