@@ -16,6 +16,7 @@ from tv_tracker.tui.common import status_badge
 _ALL_STATUSES: list[WatchStatus] = list(WatchStatus)
 
 _DISPLAY_NAMES: dict[WatchStatus, str] = {
+    WatchStatus.UPCOMING: "Upcoming",
     WatchStatus.PLANNING: "Planning",
     WatchStatus.WATCHING: "Watching",
     WatchStatus.COMPLETED: "Completed",

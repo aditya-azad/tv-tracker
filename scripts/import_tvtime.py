@@ -82,6 +82,7 @@ class ResolvedShow:
     source: Source
     external_id: str
     title: str
+    release_date: str | None = None
     total_seasons: int | None = None
     total_episodes: int | None = None
 
@@ -94,6 +95,7 @@ class ResolvedMovie:
     source: Source
     external_id: str
     title: str
+    release_date: str | None = None
 
 
 @dataclass
@@ -169,6 +171,17 @@ def _parse_int(value: str) -> int:
         return int(float(value))
     except ValueError:
         return 0
+
+
+def _is_date_future(date_str: str | None) -> bool:
+    """Return True when *date_str* (``YYYY-MM-DD``) is strictly in the future."""
+    if not date_str:
+        return False
+    try:
+        d = datetime.strptime(date_str[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return d.date() > datetime.now(UTC).date()
 
 
 def load_shows(data_dir: Path) -> dict[str, ShowRecord]:
@@ -305,24 +318,31 @@ def load_movies(data_dir: Path) -> list[MovieRecord]:
 # ---------------------------------------------------------------------------
 
 
-def determine_show_status(rec: ShowRecord) -> WatchStatus:
+def determine_show_status(rec: ShowRecord, release_date: str | None = None) -> WatchStatus:
     """Map TV Time flags to a :class:`WatchStatus` value.
 
     | TV Time signal                              | Status      |
     |---------------------------------------------|-------------|
+    | not released yet (no watched episodes)      | upcoming    |
     | is_for_later / special_status=for_later     | planning    |
     | archived                                    | on_hold     |
     | not followed                                | dropped     |
     | followed + has watched episodes             | watching    |
     | followed + no watched episodes              | planning    |
+
+    *release_date* (``YYYY-MM-DD``) takes priority when it is in the future
+    and the show has no watched progress, since an unreleased show cannot
+    meaningfully be in any other state.
     """
+    has_progress = bool(rec.watched_episodes) or rec.nb_episodes_seen > 0
+    if not has_progress and _is_date_future(release_date):
+        return WatchStatus.UPCOMING
+
     if rec.is_for_later or rec.special_status == "for_later":
         return WatchStatus.PLANNING
 
     if rec.archived:
         return WatchStatus.ON_HOLD
-
-    has_progress = bool(rec.watched_episodes) or rec.nb_episodes_seen > 0
 
     if not rec.is_followed or not rec.active:
         return WatchStatus.DROPPED
@@ -330,8 +350,12 @@ def determine_show_status(rec: ShowRecord) -> WatchStatus:
     return WatchStatus.WATCHING if has_progress else WatchStatus.PLANNING
 
 
-def determine_movie_status(rec: MovieRecord) -> WatchStatus:
-    return WatchStatus.COMPLETED if rec.watched else WatchStatus.PLANNING
+def determine_movie_status(rec: MovieRecord, release_date: str | None = None) -> WatchStatus:
+    if rec.watched:
+        return WatchStatus.COMPLETED
+    if _is_date_future(release_date):
+        return WatchStatus.UPCOMING
+    return WatchStatus.PLANNING
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +393,7 @@ def movie_to_dict(rec: MovieRecord) -> dict:
         "watched": rec.watched,
         "release_date": rec.release_date,
         "watched_at": rec.watched_at.isoformat() if rec.watched_at else None,
-        "mapped_status": determine_movie_status(rec).value,
+        "mapped_status": determine_movie_status(rec, rec.release_date).value,
     }
 
 
@@ -405,6 +429,7 @@ async def resolve_show(
                 source=Source.TMDB,
                 external_id=details.external_id,
                 title=details.title,
+                release_date=details.release_date,
                 total_seasons=details.number_of_seasons or None,
                 total_episodes=details.number_of_episodes or None,
             )
@@ -438,6 +463,7 @@ async def resolve_movie(
                 source=Source.TMDB,
                 external_id=best.external_id,
                 title=best.title,
+                release_date=best.release_date,
             )
     except Exception as exc:
         log.warning("TMDB movie search failed for '%s': %s", rec.name, exc)
@@ -509,7 +535,7 @@ _MOVIE_EPISODE = 0
 def import_shows(resolved: list[ResolvedShow], report: ImportReport, dry_run: bool) -> None:
     """Insert resolved shows and their watched episodes into the database."""
     for rs in resolved:
-        status = determine_show_status(rs.record)
+        status = determine_show_status(rs.record, rs.release_date)
 
         if dry_run:
             report.shows_imported += 1
@@ -574,7 +600,7 @@ def import_shows(resolved: list[ResolvedShow], report: ImportReport, dry_run: bo
 def import_movies(resolved: list[ResolvedMovie], report: ImportReport, dry_run: bool) -> None:
     """Insert resolved movies into the database."""
     for rm in resolved:
-        status = determine_movie_status(rm.record)
+        status = determine_movie_status(rm.record, rm.release_date)
 
         if dry_run:
             report.movies_imported += 1

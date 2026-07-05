@@ -71,6 +71,7 @@ class ShowDetails:
     source: Source
     title: str
     overview: str | None = None
+    release_date: str | None = None
     number_of_seasons: int = 0
     number_of_episodes: int = 0
     seasons: list[SeasonInfo] = field(default_factory=list)

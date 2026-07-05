@@ -93,6 +93,7 @@ class JikanClient(BaseAPIClient):
                 runtime=entry.get("duration"),
             )
 
+        aired = entry.get("aired") or {}
         episode_count = entry.get("episodes") or 0
         season = SeasonInfo(
             season_number=1,
@@ -101,6 +102,7 @@ class JikanClient(BaseAPIClient):
         )
         return ShowDetails(
             **base,
+            release_date=(aired.get("from") or "")[:10] or None,
             number_of_seasons=1,
             number_of_episodes=episode_count,
             seasons=[season],

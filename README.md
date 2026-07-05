@@ -9,7 +9,7 @@ A terminal user interface (TUI) for tracking movies and shows. Search across [TM
 - **Scroll-to-add** — search results appear in a scrollable table; press **Enter** on any result to add it to your tracking list
 - **Episode-level tracking** — open any tracked show, browse seasons and episodes, mark individual episodes as watched/unwatched with a single key
 - **Mark next episode** — press **n** to instantly mark the next unwatched episode as watched
-- **Status management** — cycle through watch statuses (planning, watching, completed, on hold, dropped) with a single key
+- **Status management** — cycle through watch statuses (upcoming, planning, watching, completed, on hold, dropped) with a single key
 - **Dashboard** — an at-a-glance view of currently watching, unwatched episodes, and recently completed items
 - **On-demand sync** — sync fresh data from the APIs with a single button press
 
@@ -122,6 +122,7 @@ Open the Config tab (press **4**) to add it.
 
 | Status      | Meaning                          |
 |-------------|----------------------------------|
+| `upcoming`  | Not yet released                 |
 | `planning`  | Want to watch, haven't started   |
 | `watching`  | Currently in progress            |
 | `completed` | Finished                         |

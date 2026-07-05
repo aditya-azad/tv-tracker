@@ -65,6 +65,7 @@ class TrackedPane(Vertical):
             yield Select(
                 [
                     ("All", None),
+                    ("Upcoming", "upcoming"),
                     ("Planning", "planning"),
                     ("Watching", "watching"),
                     ("Completed", "completed"),
@@ -87,15 +88,20 @@ class TrackedPane(Vertical):
 
     def on_mount(self) -> None:
         table = self.query_one("#tracked-table", DataTable)
-        table.add_columns(
-            "Type", "Title", "Status", "Seasons", "Episodes", "Progress"
-        )
+        table.add_columns("Type", "Title", "Status", "Seasons", "Episodes", "Progress")
         self.refresh_data()
 
     def refresh_data(self) -> None:
         status_filter = self.query_one("#status-filter", Select).value
         status: str | None = None
-        if status_filter in ("planning", "watching", "completed", "on_hold", "dropped"):
+        if status_filter in (
+            "upcoming",
+            "planning",
+            "watching",
+            "completed",
+            "on_hold",
+            "dropped",
+        ):
             status = status_filter
 
         try:

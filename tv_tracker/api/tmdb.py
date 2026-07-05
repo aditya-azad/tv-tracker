@@ -137,6 +137,7 @@ class TMDBClient(BaseAPIClient):
             source=Source.TMDB,
             title=data.get("name", ""),
             overview=data.get("overview"),
+            release_date=data.get("first_air_date"),
             number_of_seasons=data.get("number_of_seasons", 0),
             number_of_episodes=data.get("number_of_episodes", 0),
             seasons=seasons,

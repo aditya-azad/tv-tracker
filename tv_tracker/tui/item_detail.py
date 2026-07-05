@@ -179,6 +179,8 @@ class ItemDetailScreen(Screen):
                 f"Seasons: [bold]{details.number_of_seasons}[/bold]",
                 f"Episodes: [bold]{details.number_of_episodes}[/bold]",
             ]
+            if details.release_date:
+                meta_parts.append(f"First Aired: {details.release_date}")
             self.query_one("#meta", Static).update("  |  ".join(meta_parts))
             self.query_one("#overview", Static).update(details.overview or "")
             self.query_one("#status-line", Static).update(

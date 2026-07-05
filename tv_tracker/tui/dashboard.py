@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Button, DataTable, Static
 
-from tv_tracker.models import MediaType
+from tv_tracker.models import MediaType, WatchStatus
 from tv_tracker.services import (
     get_currently_watching,
     get_recently_completed,
@@ -60,6 +60,8 @@ class _DashboardBase(VerticalScroll):
             )
         for title in result.resumed:
             self.app.notify(f"[cyan]New episodes — resumed watching:[/cyan] {title}", timeout=5)
+        for title in result.released:
+            self.app.notify(f"[magenta]Released — now available:[/magenta] {title}", timeout=5)
         for err in result.errors:
             self.app.notify(f"[red]Error: {err}[/red]", timeout=5)
 
@@ -128,6 +130,8 @@ class ShowsDashboardPane(_DashboardBase):
             f"[blue]{stats.planning}[/blue] planning",
             f"[cyan]{stats.completed}[/cyan] completed",
         ]
+        if stats.upcoming:
+            parts.append(f"[magenta]{stats.upcoming}[/magenta] upcoming")
         if stats.on_hold:
             parts.append(f"[yellow]{stats.on_hold}[/yellow] on hold")
         if stats.dropped:
@@ -226,16 +230,20 @@ class MoviesDashboardPane(_DashboardBase):
             return
 
         try:
-            unwatched = len(get_unwatched_movies())
+            unwatched_items = get_unwatched_movies()
         except Exception:
-            unwatched = 0
+            unwatched_items = []
+        unwatched = len(unwatched_items)
         watched = stats.movies - unwatched
+        upcoming = sum(1 for m in unwatched_items if m.status == WatchStatus.UPCOMING)
 
         parts = [
             f"[bold]{stats.movies}[/bold] movies",
             f"[yellow]{unwatched}[/yellow] unwatched",
             f"[cyan]{watched}[/cyan] watched",
         ]
+        if upcoming:
+            parts.append(f"[magenta]{upcoming}[/magenta] upcoming")
         stats_label.update("  ".join(parts))
 
     def _load_movies(self) -> None:

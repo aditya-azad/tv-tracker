@@ -36,6 +36,7 @@ class MediaType(StrEnum):
 class WatchStatus(StrEnum):
     """A user's watch status for a tracked item."""
 
+    UPCOMING = "upcoming"
     PLANNING = "planning"
     WATCHING = "watching"
     COMPLETED = "completed"

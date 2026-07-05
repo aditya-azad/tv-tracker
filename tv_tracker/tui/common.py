@@ -11,6 +11,7 @@ _BAR_FULL = "\u2588"
 _BAR_EMPTY = "\u2591"
 
 _STATUS_STYLES: dict[WatchStatus, str] = {
+    WatchStatus.UPCOMING: "magenta",
     WatchStatus.PLANNING: "blue",
     WatchStatus.WATCHING: "bold green",
     WatchStatus.COMPLETED: "cyan",

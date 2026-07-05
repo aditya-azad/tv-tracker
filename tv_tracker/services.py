@@ -24,7 +24,18 @@ from tv_tracker.settings_store import get_tmdb_access_token, get_tmdb_api_key
 
 VALID_SOURCES = ("tmdb", "jikan")
 VALID_MEDIA_TYPES = ("movie", "show")
-VALID_STATUSES = ("planning", "watching", "completed", "on_hold", "dropped")
+VALID_STATUSES = ("upcoming", "planning", "watching", "completed", "on_hold", "dropped")
+
+
+def _is_date_future(date_str: str | None) -> bool:
+    """Return True when *date_str* (``YYYY-MM-DD``) is strictly in the future."""
+    if not date_str:
+        return False
+    try:
+        d = datetime.strptime(date_str[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return d.date() > datetime.now(UTC).date()
 
 
 def _make_tmdb_client() -> TMDBClient:
@@ -50,6 +61,7 @@ class SyncResult:
     items_synced: int = 0
     resumed: list[str] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
+    released: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -58,6 +70,7 @@ class Stats:
     """Aggregate counts of tracked items by status and media type."""
 
     total: int = 0
+    upcoming: int = 0
     planning: int = 0
     watching: int = 0
     completed: int = 0
@@ -222,6 +235,11 @@ def add_tracked_item(source: str, external_id: str, media_type: str | None = Non
         total_seasons = details.number_of_seasons or None
         total_episodes = details.number_of_episodes or None
 
+    # Not yet released -> start as upcoming rather than planning.
+    initial_status = (
+        WatchStatus.UPCOMING if _is_date_future(details.release_date) else WatchStatus.PLANNING
+    )
+
     with session_scope() as session:
         existing = (
             session.query(TrackedItem).filter_by(source=src, external_id=external_id).first()
@@ -234,6 +252,7 @@ def add_tracked_item(source: str, external_id: str, media_type: str | None = Non
             source=src,
             media_type=media_type,
             title=details.title,
+            status=initial_status,
             total_seasons=total_seasons,
             total_episodes=total_episodes,
         )
@@ -413,7 +432,10 @@ def mark_watched(
             )
         )
 
-        if item.media_type == MediaType.SHOW and item.status == WatchStatus.PLANNING:
+        if item.media_type == MediaType.SHOW and item.status in (
+            WatchStatus.PLANNING,
+            WatchStatus.UPCOMING,
+        ):
             item.status = WatchStatus.WATCHING
 
         # Auto-complete a show once every available episode has been watched.
@@ -694,17 +716,23 @@ class _SyncFetchResult:
 
 
 def _get_sync_items() -> list[_SyncItemData]:
-    """Return snapshots of items to sync (watching, planning, or completed).
+    """Return snapshots of items to sync (upcoming, watching, planning, or completed).
 
     Completed shows are included so that newly-aired episodes can be detected
-    and the show flipped back to *watching*.
+    and the show flipped back to *watching*.  Upcoming items are included so
+    that they can be promoted to *planning* once their release date passes.
     """
     with session_scope() as session:
         items = (
             session.query(TrackedItem)
             .filter(
                 TrackedItem.status.in_(
-                    [WatchStatus.WATCHING, WatchStatus.PLANNING, WatchStatus.COMPLETED]
+                    [
+                        WatchStatus.UPCOMING,
+                        WatchStatus.WATCHING,
+                        WatchStatus.PLANNING,
+                        WatchStatus.COMPLETED,
+                    ]
                 )
             )
             .all()
@@ -760,6 +788,13 @@ def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
 
             summary.items_synced += 1
 
+            # An upcoming item whose release date has passed is now available.
+            if item.status == WatchStatus.UPCOMING and not _is_date_future(
+                fr.details.release_date
+            ):
+                item.status = WatchStatus.PLANNING
+                summary.released.append(item.title)
+
             if isinstance(fr.details, MovieDetails):
                 item.last_synced_at = now
                 continue
@@ -792,13 +827,15 @@ def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
 
 
 def run_sync() -> SyncResult:
-    """Run an on-demand sync of all watching/planning/completed tracked items.
+    """Run an on-demand sync of all upcoming/watching/planning/completed tracked items.
 
     Fetches fresh data from TMDB/Jikan for each item and updates
     ``total_seasons``, ``total_episodes``, and ``last_synced_at``.  Shows
     that have watched every available episode are auto-completed (listed in
     :pyattr:`SyncResult.completed`); completed shows that gain new episodes
-    are flipped back to *watching* (listed in :pyattr:`SyncResult.resumed`).
+    are flipped back to *watching* (listed in :pyattr:`SyncResult.resumed`);
+    upcoming items whose release date has passed are moved to *planning*
+    (listed in :pyattr:`SyncResult.released`).
     """
     items = _get_sync_items()
     if not items:
@@ -891,6 +928,7 @@ def get_stats() -> Stats:
         total=total,
         movies=movies,
         shows=shows,
+        upcoming=status_counts.get(WatchStatus.UPCOMING, 0),
         planning=status_counts.get(WatchStatus.PLANNING, 0),
         watching=status_counts.get(WatchStatus.WATCHING, 0),
         completed=status_counts.get(WatchStatus.COMPLETED, 0),
