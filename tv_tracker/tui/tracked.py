@@ -88,7 +88,7 @@ class TrackedPane(Vertical):
     def on_mount(self) -> None:
         table = self.query_one("#tracked-table", DataTable)
         table.add_columns(
-            "ID", "Source", "Type", "Title", "Status", "Seasons", "Episodes", "Progress"
+            "Type", "Title", "Status", "Seasons", "Episodes", "Progress"
         )
         self.refresh_data()
 
@@ -115,8 +115,6 @@ class TrackedPane(Vertical):
                 seasons = str(item.total_seasons) if item.total_seasons else "[dim]?[/dim]"
                 episodes = str(item.total_episodes) if item.total_episodes else "[dim]?[/dim]"
             table.add_row(
-                str(item.id),
-                item.source.value,
                 item.media_type.value,
                 item.title,
                 status_badge(item.status),

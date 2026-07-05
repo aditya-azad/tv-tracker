@@ -69,7 +69,7 @@ class SearchPane(Vertical):
 
     def on_mount(self) -> None:
         table = self.query_one("#search-results", DataTable)
-        table.add_columns("Source", "Type", "ID", "Title", "Year", "Overview")
+        table.add_columns("Type", "Title", "Year", "Overview")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search-input":
@@ -127,9 +127,7 @@ class SearchPane(Vertical):
             table.clear()
             for r in response.results:
                 table.add_row(
-                    r.source.value,
                     r.media_type.value,
-                    r.external_id,
                     r.title or "[dim]Untitled[/dim]",
                     year_str(r.release_date),
                     truncate(r.overview, 50),

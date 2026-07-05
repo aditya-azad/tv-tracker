@@ -93,13 +93,13 @@ class ShowsDashboardPane(_DashboardBase):
 
     def _setup_tables(self) -> None:
         watching = self.query_one("#watching-table", DataTable)
-        watching.add_columns("ID", "Title", "Progress", "Last", "Next")
+        watching.add_columns("Title", "Progress", "Last", "Next")
 
         unwatched = self.query_one("#unwatched-table", DataTable)
-        unwatched.add_columns("ID", "Title", "Progress", "Unwatched")
+        unwatched.add_columns("Title", "Progress", "Unwatched")
 
         completed = self.query_one("#completed-table", DataTable)
-        completed.add_columns("ID", "Title", "Progress", "Updated")
+        completed.add_columns("Title", "Progress", "Updated")
 
     def refresh_data(self) -> None:
         """Reload all shows dashboard data from the database."""
@@ -146,7 +146,6 @@ class ShowsDashboardPane(_DashboardBase):
             last = last_watched_label(item)
             next_ep = next_episode_label(item)
             table.add_row(
-                str(item.id),
                 item.title,
                 progress,
                 last,
@@ -165,7 +164,6 @@ class ShowsDashboardPane(_DashboardBase):
             total = item.total_episodes or 0
             unwatched = total - watched_count
             table.add_row(
-                str(item.id),
                 item.title,
                 progress_bar(watched_count, total),
                 f"[yellow]{unwatched}[/yellow]",
@@ -181,7 +179,6 @@ class ShowsDashboardPane(_DashboardBase):
             progress = item_progress(item)
             updated = item.updated_at.strftime("%Y-%m-%d") if item.updated_at else "[dim]—[/dim]"
             table.add_row(
-                str(item.id),
                 item.title,
                 progress,
                 updated,
@@ -207,7 +204,7 @@ class MoviesDashboardPane(_DashboardBase):
 
     def _setup_tables(self) -> None:
         table = self.query_one("#movies-table", DataTable)
-        table.add_columns("ID", "Title", "Status", "Added")
+        table.add_columns("Title", "Status", "Added")
 
     def refresh_data(self) -> None:
         """Reload movies dashboard data from the database."""
@@ -251,7 +248,6 @@ class MoviesDashboardPane(_DashboardBase):
         for item in items:
             added = item.created_at.strftime("%Y-%m-%d") if item.created_at else "[dim]—[/dim]"
             table.add_row(
-                str(item.id),
                 item.title,
                 status_badge(item.status),
                 added,
