@@ -2,6 +2,8 @@
 
 A terminal user interface (TUI) for tracking movies and shows. Search across [TMDB](https://www.themoviedb.org/) and [Jikan](https://jikan.moe/) (MyAnimeList), build a watch list, mark episodes and movies as watched, and sync fresh data — all from an interactive, keyboard-driven interface built with [Textual](https://textual.textualize.io/).
 
+![TV Tracker screenshot](assets/screenshot.png)
+
 ## Features
 
 - **Interactive TUI** — tabbed interface with keyboard navigation, no command-line flags needed
@@ -135,6 +137,72 @@ Open the Config tab (press **4**) to add it.
 | `completed` | Finished                         |
 | `on_hold`   | Paused                           |
 | `dropped`   | Stopped watching                 |
+
+## Importing Data from TV Time
+
+A migration script is provided to import a [TV Time](https://www.tvtime.com/)
+GDPR data export into tv-tracker. It reads the CSV files from the export
+directory, resolves TheTVDB show IDs to TMDB IDs (and movie titles via TMDB
+search), maps watch statuses, and inserts shows, watched episodes, and movies
+into the database.
+
+### Prerequisites
+
+- A TMDB API key **or** access token, set via the Config tab in the TUI
+  (press `4`, then **Set API Key** or **Set Token**). The script reads these
+  from the database, so configure them first.
+- A TV Time GDPR export directory. Request your data from
+  `Settings → Privacy → Download my data` in the TV Time app; you'll receive
+  a ZIP containing a set of CSV files. Unzip it to a directory on disk.
+
+The export directory must contain at least these files:
+
+| File                            | Used for                              |
+|---------------------------------|---------------------------------------|
+| `followed_tv_show.csv`          | The list of followed shows            |
+| `tracking-prod-records-v2.csv`  | Watched episodes & series flags (v2)  |
+| `tracking-prod-records.csv`     | Movies (v1 tracking records)          |
+| `user_show_special_status.csv`  | For-later / favorite flags            |
+| `user_tv_show_data.csv`         | Episode-seen counts for status hints  |
+
+### Running the Import
+
+From the repository root, point `--data-dir` at your unzipped export:
+
+```bash
+uv run python scripts/import_tvtime.py --data-dir /path/to/tvtime-export
+```
+
+Flags:
+
+| Flag             | Default              | Description                                   |
+|------------------|----------------------|-----------------------------------------------|
+| `--data-dir DIR` | `asdf`               | Directory containing the TV Time CSV export   |
+| `--dry-run`      | off                  | Resolve IDs and report without writing to DB  |
+| `--report-file`  | `import_report.json` | Where to write the failure report             |
+| `-v` / `--verbose` | off                | Verbose logging                               |
+
+A dry run is recommended first to verify TMDB resolution before writing:
+
+```bash
+uv run python scripts/import_tvtime.py --data-dir /path/to/tvtime-export --dry-run
+```
+
+### Status Mapping
+
+TV Time flags are mapped to tv-tracker statuses as follows:
+
+| TV Time signal                              | Status      |
+|---------------------------------------------|-------------|
+| Not released yet, no watched episodes       | `upcoming`  |
+| `is_for_later` / `for_later` special status | `planning`  |
+| Archived                                    | `on_hold`   |
+| Not followed                                | `dropped`   |
+| Followed, has watched episodes              | `watching`  |
+| Followed, no watched episodes               | `planning`  |
+
+Shows where every available episode has been watched are auto-promoted to
+`completed`. Watched movies are imported as `completed`.
 
 ## Configuration
 
