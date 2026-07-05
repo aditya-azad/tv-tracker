@@ -62,6 +62,7 @@ class TrackedItem(Base):
     total_seasons: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

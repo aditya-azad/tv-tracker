@@ -82,6 +82,8 @@ def time_ago_label(dt: datetime | None) -> str:
     """Return a compact relative-time label like ``3w ago`` or ``2d ago``."""
     if dt is None:
         return "[dim]never[/dim]"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
     now = datetime.now(UTC)
     delta = now - dt
     days = delta.days

@@ -72,15 +72,15 @@ class _DashboardBase(VerticalScroll):
 
 
 class ShowsDashboardPane(_DashboardBase):
-    """Shows dashboard — haven't watched for a while and currently watching."""
+    """Shows dashboard — currently watching and haven't watched for a while."""
 
     def compose(self) -> ComposeResult:
         yield Button("Sync & Check Alerts", id="sync-btn", classes="sync-button")
         yield Static(id="stats")
-        yield Static("Haven't Watched For A While", classes="section-title", markup=True)
-        yield DataTable(id="stale-table", cursor_type="row")
         yield Static("Currently Watching", classes="section-title", markup=True)
         yield DataTable(id="watching-table", cursor_type="row")
+        yield Static("Haven't Watched For A While", classes="section-title", markup=True)
+        yield DataTable(id="stale-table", cursor_type="row")
 
     def on_mount(self) -> None:
         self._setup_tables()
@@ -95,13 +95,13 @@ class ShowsDashboardPane(_DashboardBase):
         stale.add_columns("Title", "Progress", "Last Episode", "Last Watched")
 
         watching = self.query_one("#watching-table", DataTable)
-        watching.add_columns("Title", "Progress", "Last", "Next")
+        watching.add_columns("Title", "Progress", "Last", "Next", "Last Watched")
 
     def refresh_data(self) -> None:
         """Reload all shows dashboard data from the database."""
         self._load_stats()
-        self._load_stale()
         self._load_watching()
+        self._load_stale()
 
     def _load_stats(self) -> None:
         try:
@@ -158,11 +158,16 @@ class ShowsDashboardPane(_DashboardBase):
             progress = progress_bar(len(item.watched_episodes), item.total_episodes)
             last = last_watched_label(item)
             next_ep = next_episode_label(item)
+            last_watched = max(
+                (we.watched_at for we in item.watched_episodes if we.season_number != 0),
+                default=None,
+            )
             table.add_row(
                 item.title,
                 progress,
                 last,
                 next_ep,
+                time_ago_label(last_watched),
             )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from tv_tracker.config import settings
@@ -48,7 +48,19 @@ def init_db(db_path=None) -> Engine:
     """Create all tables and return the engine."""
     engine = init_engine(db_path)
     Base.metadata.create_all(engine)
+    _migrate(engine)
     return engine
+
+
+def _migrate(engine: Engine) -> None:
+    """Run lightweight column migrations for existing databases."""
+    inspector = inspect(engine)
+    if "tracked_items" not in inspector.get_table_names():
+        return
+    existing_cols = {col["name"] for col in inspector.get_columns("tracked_items")}
+    if "resumed_at" not in existing_cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE tracked_items ADD COLUMN resumed_at DATETIME"))
 
 
 def get_session() -> Session:

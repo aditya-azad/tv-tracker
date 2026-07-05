@@ -440,6 +440,10 @@ def mark_watched(
         ):
             item.status = WatchStatus.WATCHING
 
+        # Clear resumed_at — the user is actively watching again.
+        if item.media_type == MediaType.SHOW and item.resumed_at is not None:
+            item.resumed_at = None
+
         # Auto-complete a show once every available episode has been watched.
         # Only promoted from WATCHING so on_hold/dropped statuses are respected.
         if (
@@ -644,22 +648,23 @@ def _last_watched_at(item: TrackedItem) -> datetime | None:
     """Return the most recent ``watched_at`` timestamp for a show's episodes.
 
     Movie sentinel rows (season 0) are excluded.  Returns ``None`` when no
-    real episodes have been watched.
+    real episodes have been watched.  Naive datetimes (SQLite doesn't store
+    tz info) are assumed to be UTC.
     """
     timestamps = [
-        we.watched_at for we in item.watched_episodes if we.season_number != _MOVIE_SEASON
+        we.watched_at if we.watched_at.tzinfo else we.watched_at.replace(tzinfo=UTC)
+        for we in item.watched_episodes
+        if we.season_number != _MOVIE_SEASON
     ]
     return max(timestamps) if timestamps else None
 
 
-def _has_unwatched_episodes(item: TrackedItem) -> bool:
-    """Return True when a show has more available episodes than watched ones."""
-    if not item.total_episodes:
+def _is_recently_resumed(item: TrackedItem, cutoff: datetime) -> bool:
+    """Return True when a show was resumed by sync (new episodes) within the cutoff."""
+    if item.resumed_at is None:
         return False
-    watched_count = sum(
-        1 for we in item.watched_episodes if we.season_number != _MOVIE_SEASON
-    )
-    return watched_count < item.total_episodes
+    resumed = item.resumed_at if item.resumed_at.tzinfo else item.resumed_at.replace(tzinfo=UTC)
+    return resumed >= cutoff
 
 
 def _get_watching_shows() -> list[TrackedItem]:
@@ -684,30 +689,31 @@ def get_currently_watching_shows() -> list[TrackedItem]:
     A show qualifies when:
     * the user watched an episode within the last :data:`STALE_THRESHOLD`
       (2 weeks), **or**
-    * there are unwatched episodes available — e.g. new episodes arrived via
-      sync and the show was resumed from *completed*.
+    * no episodes have been watched yet (just started), **or**
+    * the show was recently resumed by sync — new episodes arrived and the
+      show was flipped from *completed* back to *watching*.
     """
     cutoff = datetime.now(UTC) - STALE_THRESHOLD
     result: list[TrackedItem] = []
     for item in _get_watching_shows():
         last_at = _last_watched_at(item)
-        if last_at is None or last_at >= cutoff or _has_unwatched_episodes(item):
+        if last_at is None or last_at >= cutoff or _is_recently_resumed(item, cutoff):
             result.append(item)
     return result
 
 
 def get_stale_shows() -> list[TrackedItem]:
-    """Return shows the user hasn't watched in over 2 weeks and is caught up on.
+    """Return shows the user hasn't watched in over 2 weeks.
 
     A show qualifies when its most recent watched episode was more than
-    :data:`STALE_THRESHOLD` (2 weeks) ago **and** all available episodes have
-    been watched (no unwatched episodes remaining).
+    :data:`STALE_THRESHOLD` (2 weeks) ago and it wasn't recently resumed
+    by sync (no new episodes detected).
     """
     cutoff = datetime.now(UTC) - STALE_THRESHOLD
     result: list[TrackedItem] = []
     for item in _get_watching_shows():
         last_at = _last_watched_at(item)
-        if last_at is not None and last_at < cutoff and not _has_unwatched_episodes(item):
+        if last_at is not None and last_at < cutoff and not _is_recently_resumed(item, cutoff):
             result.append(item)
     return result
 
@@ -867,6 +873,7 @@ def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
                 and watched_count < item.total_episodes
             ):
                 item.status = WatchStatus.WATCHING
+                item.resumed_at = now
                 summary.resumed.append(item.title)
 
     return summary
