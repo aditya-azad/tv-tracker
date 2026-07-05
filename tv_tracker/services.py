@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -25,6 +25,8 @@ from tv_tracker.settings_store import get_tmdb_access_token, get_tmdb_api_key
 VALID_SOURCES = ("tmdb", "jikan")
 VALID_MEDIA_TYPES = ("movie", "show")
 VALID_STATUSES = ("upcoming", "planning", "watching", "completed", "on_hold", "dropped")
+
+STALE_THRESHOLD = timedelta(weeks=2)
 
 
 def _is_date_future(date_str: str | None) -> bool:
@@ -638,32 +640,76 @@ def unmark_watched(item_id: int, season: int | None = None, episode: int | None 
         return item.title
 
 
-def get_currently_watching() -> list[TrackedItem]:
-    """Return tracked items with status *watching*, eagerly loaded with
-    watched-episode data for progress display."""
+def _last_watched_at(item: TrackedItem) -> datetime | None:
+    """Return the most recent ``watched_at`` timestamp for a show's episodes.
+
+    Movie sentinel rows (season 0) are excluded.  Returns ``None`` when no
+    real episodes have been watched.
+    """
+    timestamps = [
+        we.watched_at for we in item.watched_episodes if we.season_number != _MOVIE_SEASON
+    ]
+    return max(timestamps) if timestamps else None
+
+
+def _has_unwatched_episodes(item: TrackedItem) -> bool:
+    """Return True when a show has more available episodes than watched ones."""
+    if not item.total_episodes:
+        return False
+    watched_count = sum(
+        1 for we in item.watched_episodes if we.season_number != _MOVIE_SEASON
+    )
+    return watched_count < item.total_episodes
+
+
+def _get_watching_shows() -> list[TrackedItem]:
+    """Return all shows with status *watching*, eagerly loaded with episodes."""
     with session_scope() as session:
         items = (
             session.query(TrackedItem)
             .options(selectinload(TrackedItem.watched_episodes))
-            .filter(TrackedItem.status == WatchStatus.WATCHING)
+            .filter(
+                TrackedItem.status == WatchStatus.WATCHING,
+                TrackedItem.media_type == MediaType.SHOW,
+            )
             .order_by(TrackedItem.title)
             .all()
         )
         return items
 
 
-def get_recently_completed(limit: int = 5) -> list[TrackedItem]:
-    """Return recently completed tracked items, most recently updated first."""
-    with session_scope() as session:
-        items = (
-            session.query(TrackedItem)
-            .options(selectinload(TrackedItem.watched_episodes))
-            .filter(TrackedItem.status == WatchStatus.COMPLETED)
-            .order_by(TrackedItem.updated_at.desc())
-            .limit(limit)
-            .all()
-        )
-        return items
+def get_currently_watching_shows() -> list[TrackedItem]:
+    """Return shows the user is actively watching or has new episodes to watch.
+
+    A show qualifies when:
+    * the user watched an episode within the last :data:`STALE_THRESHOLD`
+      (2 weeks), **or**
+    * there are unwatched episodes available — e.g. new episodes arrived via
+      sync and the show was resumed from *completed*.
+    """
+    cutoff = datetime.now(UTC) - STALE_THRESHOLD
+    result: list[TrackedItem] = []
+    for item in _get_watching_shows():
+        last_at = _last_watched_at(item)
+        if last_at is None or last_at >= cutoff or _has_unwatched_episodes(item):
+            result.append(item)
+    return result
+
+
+def get_stale_shows() -> list[TrackedItem]:
+    """Return shows the user hasn't watched in over 2 weeks and is caught up on.
+
+    A show qualifies when its most recent watched episode was more than
+    :data:`STALE_THRESHOLD` (2 weeks) ago **and** all available episodes have
+    been watched (no unwatched episodes remaining).
+    """
+    cutoff = datetime.now(UTC) - STALE_THRESHOLD
+    result: list[TrackedItem] = []
+    for item in _get_watching_shows():
+        last_at = _last_watched_at(item)
+        if last_at is not None and last_at < cutoff and not _has_unwatched_episodes(item):
+            result.append(item)
+    return result
 
 
 def get_watched_episode_keys(item_id: int) -> set[tuple[int, int]]:
@@ -843,45 +889,6 @@ def run_sync() -> SyncResult:
 
     fetch_results = asyncio.run(_fetch_all_details(items))
     return _process_sync_results(fetch_results)
-
-
-def get_shows_with_unwatched_episodes() -> list[TrackedItem]:
-    """Return shows where the watched episode count is less than the total.
-
-    Only items with ``media_type = show`` and a non-null ``total_episodes``
-    are considered.  Movies are excluded — they are either watched or not.
-    """
-    with session_scope() as session:
-        watched_counts = (
-            session.query(
-                WatchedEpisode.tracked_item_id,
-                func.count(WatchedEpisode.id).label("watched_count"),
-            )
-            .filter(WatchedEpisode.season_number != 0)
-            .group_by(WatchedEpisode.tracked_item_id)
-            .subquery()
-        )
-
-        items = (
-            session.query(TrackedItem)
-            .outerjoin(
-                watched_counts,
-                watched_counts.c.tracked_item_id == TrackedItem.id,
-            )
-            .options(selectinload(TrackedItem.watched_episodes))
-            .filter(
-                TrackedItem.media_type == MediaType.SHOW,
-                TrackedItem.total_episodes.is_not(None),
-                TrackedItem.total_episodes > 0,
-            )
-            .filter(
-                (watched_counts.c.watched_count.is_(None))
-                | (watched_counts.c.watched_count < TrackedItem.total_episodes)
-            )
-            .order_by(TrackedItem.title)
-            .all()
-        )
-        return items
 
 
 def get_unwatched_movies() -> list[TrackedItem]:

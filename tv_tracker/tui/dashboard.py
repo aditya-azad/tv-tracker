@@ -7,21 +7,20 @@ from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Button, DataTable, Static
 
-from tv_tracker.models import MediaType, WatchStatus
+from tv_tracker.models import WatchStatus
 from tv_tracker.services import (
-    get_currently_watching,
-    get_recently_completed,
-    get_shows_with_unwatched_episodes,
+    get_currently_watching_shows,
+    get_stale_shows,
     get_stats,
     get_unwatched_movies,
     run_sync,
 )
 from tv_tracker.tui.common import (
-    item_progress,
     last_watched_label,
     next_episode_label,
     progress_bar,
     status_badge,
+    time_ago_label,
 )
 
 
@@ -73,17 +72,15 @@ class _DashboardBase(VerticalScroll):
 
 
 class ShowsDashboardPane(_DashboardBase):
-    """Shows dashboard — currently watching, unwatched episodes, recently completed."""
+    """Shows dashboard — haven't watched for a while and currently watching."""
 
     def compose(self) -> ComposeResult:
         yield Button("Sync & Check Alerts", id="sync-btn", classes="sync-button")
         yield Static(id="stats")
+        yield Static("Haven't Watched For A While", classes="section-title", markup=True)
+        yield DataTable(id="stale-table", cursor_type="row")
         yield Static("Currently Watching", classes="section-title", markup=True)
         yield DataTable(id="watching-table", cursor_type="row")
-        yield Static("Unwatched Episodes", classes="section-title", markup=True)
-        yield DataTable(id="unwatched-table", cursor_type="row")
-        yield Static("Recently Completed", classes="section-title", markup=True)
-        yield DataTable(id="completed-table", cursor_type="row")
 
     def on_mount(self) -> None:
         self._setup_tables()
@@ -94,21 +91,17 @@ class ShowsDashboardPane(_DashboardBase):
             self._on_sync_pressed()
 
     def _setup_tables(self) -> None:
+        stale = self.query_one("#stale-table", DataTable)
+        stale.add_columns("Title", "Progress", "Last Episode", "Last Watched")
+
         watching = self.query_one("#watching-table", DataTable)
         watching.add_columns("Title", "Progress", "Last", "Next")
-
-        unwatched = self.query_one("#unwatched-table", DataTable)
-        unwatched.add_columns("Title", "Progress", "Unwatched")
-
-        completed = self.query_one("#completed-table", DataTable)
-        completed.add_columns("Title", "Progress", "Updated")
 
     def refresh_data(self) -> None:
         """Reload all shows dashboard data from the database."""
         self._load_stats()
+        self._load_stale()
         self._load_watching()
-        self._load_unwatched()
-        self._load_completed()
 
     def _load_stats(self) -> None:
         try:
@@ -139,13 +132,29 @@ class ShowsDashboardPane(_DashboardBase):
 
         stats_label.update("  ".join(parts))
 
+    def _load_stale(self) -> None:
+        table = self.query_one("#stale-table", DataTable)
+        table.clear()
+        items = get_stale_shows()
+        for item in items:
+            progress = progress_bar(len(item.watched_episodes), item.total_episodes)
+            last_ep = last_watched_label(item)
+            last_watched = max(
+                (we.watched_at for we in item.watched_episodes if we.season_number != 0),
+                default=None,
+            )
+            table.add_row(
+                item.title,
+                progress,
+                last_ep,
+                time_ago_label(last_watched),
+            )
+
     def _load_watching(self) -> None:
         table = self.query_one("#watching-table", DataTable)
         table.clear()
-        items = get_currently_watching()
+        items = get_currently_watching_shows()
         for item in items:
-            if item.media_type != MediaType.SHOW:
-                continue
             progress = progress_bar(len(item.watched_episodes), item.total_episodes)
             last = last_watched_label(item)
             next_ep = next_episode_label(item)
@@ -154,38 +163,6 @@ class ShowsDashboardPane(_DashboardBase):
                 progress,
                 last,
                 next_ep,
-            )
-
-    def _load_unwatched(self) -> None:
-        table = self.query_one("#unwatched-table", DataTable)
-        table.clear()
-        try:
-            items = get_shows_with_unwatched_episodes()
-        except Exception:
-            return
-        for item in items:
-            watched_count = len(item.watched_episodes)
-            total = item.total_episodes or 0
-            unwatched = total - watched_count
-            table.add_row(
-                item.title,
-                progress_bar(watched_count, total),
-                f"[yellow]{unwatched}[/yellow]",
-            )
-
-    def _load_completed(self) -> None:
-        table = self.query_one("#completed-table", DataTable)
-        table.clear()
-        items = get_recently_completed()
-        for item in items:
-            if item.media_type != MediaType.SHOW:
-                continue
-            progress = item_progress(item)
-            updated = item.updated_at.strftime("%Y-%m-%d") if item.updated_at else "[dim]—[/dim]"
-            table.add_row(
-                item.title,
-                progress,
-                updated,
             )
 
 

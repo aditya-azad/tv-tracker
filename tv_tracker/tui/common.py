@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 
 from tv_tracker.models import MediaType, TrackedItem, WatchStatus
@@ -74,6 +76,30 @@ def next_episode_label(item: TrackedItem) -> str:
     if last.season_number == 0:
         return "[dim]—[/dim]"
     return f"S{last.season_number:02}E{last.episode_number + 1:02}"
+
+
+def time_ago_label(dt: datetime | None) -> str:
+    """Return a compact relative-time label like ``3w ago`` or ``2d ago``."""
+    if dt is None:
+        return "[dim]never[/dim]"
+    now = datetime.now(UTC)
+    delta = now - dt
+    days = delta.days
+    if days >= 365:
+        years = days // 365
+        return f"[yellow]{years}y ago[/yellow]"
+    if days >= 30:
+        months = days // 30
+        return f"[yellow]{months}mo ago[/yellow]"
+    if days >= 7:
+        weeks = days // 7
+        return f"[yellow]{weeks}w ago[/yellow]"
+    if days >= 1:
+        return f"[yellow]{days}d ago[/yellow]"
+    hours = int(delta.total_seconds() // 3600)
+    if hours >= 1:
+        return f"[green]{hours}h ago[/green]"
+    return "[green]just now[/green]"
 
 
 def movie_progress(item: TrackedItem) -> str:
