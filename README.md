@@ -10,7 +10,7 @@ A terminal user interface (TUI) for tracking movies and shows. Search across [TM
 - **Episode-level tracking** — open any tracked show, browse seasons and episodes, mark individual episodes as watched/unwatched with a single key
 - **Mark next episode** — press **n** to instantly mark the next unwatched episode as watched
 - **Status management** — cycle through watch statuses (upcoming, planning, watching, completed, on hold, dropped) with a single key
-- **Dashboard** — an at-a-glance view of currently watching, unwatched episodes, and recently completed items
+- **Dashboard** — an at-a-glance view of currently watching, unwatched episodes
 - **On-demand sync** — sync fresh data from the APIs with a single button press
 
 ## Requirements
@@ -20,27 +20,34 @@ A terminal user interface (TUI) for tracking movies and shows. Search across [TM
 
 ## Installation
 
-### Global (recommended)
+### Prerequisites
+
+Install [uv](https://docs.astral.sh/uv/) (the package manager used below):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```
+irm https://astral.sh/uv/install.ps1 | iex
+```
+
+Also available via `pipx install uv`, `pip install uv`, or `brew install uv`.
+
+### Install
 
 Install the TUI globally as an editable tool so the `tv-tracker` command is
 available from any directory, while source edits are picked up on the next
 invocation — no reinstall needed:
 
 ```bash
-git clone <repo-url> && cd tv-tracker
 uv tool install --editable .
 ```
 
 Data (database, credentials) is stored in `~/.tv-tracker/`, independent of the
 clone location. To remove the tool later: `uv tool uninstall tv-tracker`.
-
-### Local (development only)
-
-```bash
-git clone <repo-url> && cd tv-tracker
-uv sync
-uv run tv-tracker
-```
 
 ## Usage
 
