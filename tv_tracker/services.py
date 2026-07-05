@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import func
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from tv_tracker.api import EpisodeInfo, MovieDetails, SearchResult, ShowDetails
 from tv_tracker.api.jikan import JikanClient
@@ -48,6 +48,8 @@ class SyncResult:
     """Summary of an on-demand sync run."""
 
     items_synced: int = 0
+    resumed: list[str] = field(default_factory=list)
+    completed: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -280,6 +282,18 @@ _MOVIE_SEASON = 0
 _MOVIE_EPISODE = 0
 
 
+def _count_watched_episodes(session: Session, item_id: int) -> int:
+    """Count watched episode rows for *item_id*, excluding the movie sentinel."""
+    return (
+        session.query(WatchedEpisode)
+        .filter(
+            WatchedEpisode.tracked_item_id == item_id,
+            WatchedEpisode.season_number != _MOVIE_SEASON,
+        )
+        .count()
+    )
+
+
 def set_watch_status(item_id: int, status: str) -> TrackedItem:
     """Update the watch status of a tracked item.
 
@@ -344,6 +358,11 @@ def mark_watched(
     For movies, omit *season* and *episode*.
     For shows, both *season* and *episode* are required.
 
+    When a show's watched episode count reaches its ``total_episodes`` (the
+    number currently available), its status is automatically set to
+    ``COMPLETED`` — but only if it was already ``WATCHING``, so shows the
+    user deliberately put on hold or dropped are left untouched.
+
     Returns the updated :class:`TrackedItem`.
     Raises ``ValueError`` if the item doesn't exist, the arguments don't
     match the media type, or the episode/movie is already marked watched.
@@ -396,6 +415,16 @@ def mark_watched(
 
         if item.media_type == MediaType.SHOW and item.status == WatchStatus.PLANNING:
             item.status = WatchStatus.WATCHING
+
+        # Auto-complete a show once every available episode has been watched.
+        # Only promoted from WATCHING so on_hold/dropped statuses are respected.
+        if (
+            item.media_type == MediaType.SHOW
+            and item.status == WatchStatus.WATCHING
+            and item.total_episodes is not None
+            and _count_watched_episodes(session, item_id) >= item.total_episodes
+        ):
+            item.status = WatchStatus.COMPLETED
 
         return item
 
@@ -461,8 +490,8 @@ def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedI
         raise ValueError(f"All episodes of '{item.title}' are already watched.")
 
     target_season, target_episode = target
-    mark_watched(item_id, target_season, target_episode)
-    return item, target_season, target_episode
+    updated = mark_watched(item_id, target_season, target_episode)
+    return updated, target_season, target_episode
 
 
 def mark_all_watched(item_id: int) -> tuple[TrackedItem, int]:
@@ -665,11 +694,19 @@ class _SyncFetchResult:
 
 
 def _get_sync_items() -> list[_SyncItemData]:
-    """Return snapshots of items to sync (status: watching or planning)."""
+    """Return snapshots of items to sync (watching, planning, or completed).
+
+    Completed shows are included so that newly-aired episodes can be detected
+    and the show flipped back to *watching*.
+    """
     with session_scope() as session:
         items = (
             session.query(TrackedItem)
-            .filter(TrackedItem.status.in_([WatchStatus.WATCHING, WatchStatus.PLANNING]))
+            .filter(
+                TrackedItem.status.in_(
+                    [WatchStatus.WATCHING, WatchStatus.PLANNING, WatchStatus.COMPLETED]
+                )
+            )
             .all()
         )
         return [
@@ -731,14 +768,37 @@ def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
             item.total_episodes = fr.details.number_of_episodes or None
             item.last_synced_at = now
 
+            watched_count = _count_watched_episodes(session, item.id)
+
+            # All available episodes watched — auto-complete.
+            if (
+                item.status == WatchStatus.WATCHING
+                and item.total_episodes is not None
+                and watched_count >= item.total_episodes
+            ):
+                item.status = WatchStatus.COMPLETED
+                summary.completed.append(item.title)
+
+            # New episodes arrived for a completed show — resume watching.
+            elif (
+                item.status == WatchStatus.COMPLETED
+                and item.total_episodes is not None
+                and watched_count < item.total_episodes
+            ):
+                item.status = WatchStatus.WATCHING
+                summary.resumed.append(item.title)
+
     return summary
 
 
 def run_sync() -> SyncResult:
-    """Run an on-demand sync of all watching/planning tracked items.
+    """Run an on-demand sync of all watching/planning/completed tracked items.
 
     Fetches fresh data from TMDB/Jikan for each item and updates
-    ``total_seasons``, ``total_episodes``, and ``last_synced_at``.
+    ``total_seasons``, ``total_episodes``, and ``last_synced_at``.  Shows
+    that have watched every available episode are auto-completed (listed in
+    :pyattr:`SyncResult.completed`); completed shows that gain new episodes
+    are flipped back to *watching* (listed in :pyattr:`SyncResult.resumed`).
     """
     items = _get_sync_items()
     if not items:

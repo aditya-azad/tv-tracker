@@ -10,15 +10,17 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Label, Select, Static
 
-from tv_tracker.models import MediaType, TrackedItem
+from tv_tracker.models import MediaType, TrackedItem, WatchStatus
 from tv_tracker.services import (
     list_tracked_items,
     mark_all_watched,
     mark_next_watched,
     remove_tracked_item,
+    set_watch_status,
 )
 from tv_tracker.tui.common import format_api_error, item_progress, status_badge
 from tv_tracker.tui.confirm import ConfirmScreen
+from tv_tracker.tui.status_select import StatusSelectScreen
 
 
 class TrackedPane(Vertical):
@@ -49,6 +51,7 @@ class TrackedPane(Vertical):
         Binding("enter", "open_detail", "Open detail", show=True),
         Binding("w", "mark_next", "Mark next watched", show=True),
         Binding("W", "mark_all_watched", "Mark all watched", show=True),
+        Binding("s", "change_status", "Change status", show=True),
         Binding("r", "remove_item", "Remove", show=True),
     ]
 
@@ -77,6 +80,7 @@ class TrackedPane(Vertical):
             "[dim]Press [/dim][bold]Enter[/bold][dim] to open details, "
             "[/dim][bold]w[/bold][dim] to mark next episode watched, "
             "[/dim][bold]W[/bold][dim] to mark whole show watched, "
+            "[/dim][bold]s[/bold][dim] to change status, "
             "[/dim][bold]r[/bold][dim] to remove.[/dim]",
             id="tracked-hint",
         )
@@ -174,6 +178,12 @@ class TrackedPane(Vertical):
             f"[green]Marked watched:[/green] {tracked_item.title} S{season:02}E{episode:02}",
             timeout=4,
         )
+        if tracked_item.status == WatchStatus.COMPLETED:
+            self.app.call_from_thread(
+                self.app.notify,
+                f"[green]All episodes watched — marked completed:[/green] {tracked_item.title}",
+                timeout=4,
+            )
         self.app.call_from_thread(self.app.refresh_all_tabs)  # type: ignore[attr-defined]
 
     def action_mark_all_watched(self) -> None:
@@ -219,6 +229,44 @@ class TrackedPane(Vertical):
             self.app.call_from_thread(
                 self.app.notify,
                 f"[green]Already fully watched:[/green] {updated.title}",
+                timeout=4,
+            )
+        self.app.call_from_thread(self.app.refresh_all_tabs)  # type: ignore[attr-defined]
+
+    def action_change_status(self) -> None:
+        item = self._get_selected_item()
+        if item is None:
+            self.app.notify("[yellow]Select an item first.[/yellow]", timeout=3)
+            return
+
+        def on_result(result: WatchStatus | None) -> None:
+            if result is not None and result != item.status:
+                self._set_status(item, result)
+
+        self.app.push_screen(StatusSelectScreen(item.title, item.status), on_result)
+
+    @work(thread=True)
+    def _set_status(self, item: TrackedItem, status: WatchStatus) -> None:
+        try:
+            updated = set_watch_status(item.id, status.value)
+        except ValueError as exc:
+            self.app.call_from_thread(self.app.notify, f"[red]{exc}[/red]", timeout=5)
+            return
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.app.notify, format_api_error("update status", exc), timeout=5
+            )
+            return
+
+        self.app.call_from_thread(
+            self.app.notify,
+            f"[green]Updated:[/green] {updated.title} -> {status_badge(updated.status)}",
+            timeout=3,
+        )
+        if updated.media_type == MediaType.SHOW and updated.status == WatchStatus.COMPLETED:
+            self.app.call_from_thread(
+                self.app.notify,
+                "[dim]All episodes marked as watched.[/dim]",
                 timeout=4,
             )
         self.app.call_from_thread(self.app.refresh_all_tabs)  # type: ignore[attr-defined]

@@ -175,6 +175,12 @@ class DashboardPane(VerticalScroll):
             return
 
         self.app.notify(f"[green]Synced {result.items_synced} item(s).[/green]", timeout=3)
+        for title in result.completed:
+            self.app.notify(
+                f"[cyan]All episodes watched — marked completed:[/cyan] {title}", timeout=5
+            )
+        for title in result.resumed:
+            self.app.notify(f"[cyan]New episodes — resumed watching:[/cyan] {title}", timeout=5)
         for err in result.errors:
             self.app.notify(f"[red]Error: {err}[/red]", timeout=5)
 

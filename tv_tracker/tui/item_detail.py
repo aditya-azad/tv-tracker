@@ -26,14 +26,7 @@ from tv_tracker.services import (
 )
 from tv_tracker.tui.common import format_api_error, status_badge
 from tv_tracker.tui.confirm import ConfirmScreen
-
-_ALL_STATUSES = [
-    WatchStatus.PLANNING,
-    WatchStatus.WATCHING,
-    WatchStatus.COMPLETED,
-    WatchStatus.ON_HOLD,
-    WatchStatus.DROPPED,
-]
+from tv_tracker.tui.status_select import StatusSelectScreen
 
 
 class ItemDetailScreen(Screen):
@@ -41,7 +34,7 @@ class ItemDetailScreen(Screen):
 
     BINDINGS: ClassVar = [
         Binding("escape", "app.pop_screen", "Back", show=True),
-        Binding("s", "cycle_status", "Change status", show=True),
+        Binding("s", "change_status", "Change status", show=True),
         Binding("n", "mark_next", "Mark next watched", show=True),
         Binding("w", "toggle_watched", "Toggle watched", show=True),
         Binding("W", "mark_all_watched", "Mark all watched", show=True),
@@ -287,6 +280,12 @@ class ItemDetailScreen(Screen):
             f"[green]Marked watched:[/green] {item.title} S{season:02}E{episode:02}",
             timeout=4,
         )
+        if item.status == WatchStatus.COMPLETED:
+            self.app.call_from_thread(
+                self.app.notify,
+                f"[green]All episodes watched — marked completed:[/green] {item.title}",
+                timeout=4,
+            )
         self.app.call_from_thread(self._reload_after_change)
 
     def action_mark_all_watched(self) -> None:
@@ -396,28 +395,36 @@ class ItemDetailScreen(Screen):
                 self.app.call_from_thread(self.app.notify, f"[red]{exc}[/red]", timeout=5)
         else:
             try:
-                mark_watched(self._item_id, season, ep.episode_number)
+                updated = mark_watched(self._item_id, season, ep.episode_number)
                 self.app.call_from_thread(
                     self.app.notify,
                     f"[green]Marked watched:[/green] {item.title} "
                     f"S{season:02}E{ep.episode_number:02}",
                     timeout=3,
                 )
+                if updated.status == WatchStatus.COMPLETED:
+                    self.app.call_from_thread(
+                        self.app.notify,
+                        f"[green]All episodes watched — marked completed:[/green] {item.title}",
+                        timeout=4,
+                    )
             except ValueError as exc:
                 self.app.call_from_thread(self.app.notify, f"[red]{exc}[/red]", timeout=5)
 
         self.app.call_from_thread(self._reload_after_change)
 
-    def action_cycle_status(self) -> None:
-        """Cycle through watch statuses for the current item."""
+    def action_change_status(self) -> None:
+        """Open a modal to pick a new watch status for the current item."""
         items = list_tracked_items()
         item = next((i for i in items if i.id == self._item_id), None)
         if item is None:
             return
 
-        current_idx = _ALL_STATUSES.index(item.status)
-        next_status = _ALL_STATUSES[(current_idx + 1) % len(_ALL_STATUSES)]
-        self._set_status(next_status)
+        def on_result(result: WatchStatus | None) -> None:
+            if result is not None and result != item.status:
+                self._set_status(result)
+
+        self.app.push_screen(StatusSelectScreen(item.title, item.status), on_result)
 
     @work(thread=True)
     def _set_status(self, status: WatchStatus) -> None:

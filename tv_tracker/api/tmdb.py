@@ -85,6 +85,24 @@ class TMDBClient(BaseAPIClient):
             for r in results
         ]
 
+    # -- find --------------------------------------------------------------
+
+    async def find_by_tvdb_id(self, tvdb_id: int | str) -> ShowDetails | None:
+        """Find a TV show on TMDB by its TheTVDB ID.
+
+        Uses TMDB's ``/find`` endpoint with ``external_source=tvdb_id``.
+        Returns full :class:`ShowDetails` (season summaries included) or
+        ``None`` if no match is found.
+        """
+        data = await self._get(
+            f"/find/{tvdb_id}",
+            self._params({"external_source": "tvdb_id"}),
+        )
+        results = data.get("tv_results", [])
+        if not results:
+            return None
+        return await self.get_tv(results[0]["id"])
+
     # -- details -----------------------------------------------------------
 
     async def get_movie(self, movie_id: int | str) -> MovieDetails:
