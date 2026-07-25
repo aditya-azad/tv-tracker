@@ -522,6 +522,51 @@ def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedI
     return updated, target_season, target_episode
 
 
+def mark_previous_unwatched(item_id: int) -> tuple[TrackedItem, int, int]:
+    """Mark the most recently watched episode of a show as unwatched.
+
+    The "previous" episode is the one with the latest ``watched_at``
+    timestamp (i.e. the last episode the user marked watched).  When the
+    show was auto-completed, removing an episode flips its status back to
+    ``WATCHING`` so it reappears in the currently-watching view.
+
+    Returns ``(item, season_number, episode_number)``.
+    Raises ``ValueError`` if the item doesn't exist, is a movie, or has no
+    watched episodes to undo.
+    """
+    with session_scope() as session:
+        item = session.get(TrackedItem, item_id)
+        if item is None:
+            raise ValueError(f"No tracked item with ID {item_id}")
+        if item.media_type == MediaType.MOVIE:
+            raise ValueError(
+                f"'{item.title}' is a movie — use "
+                f"'tv-tracker unwatch {item_id}' to unmark a movie."
+            )
+
+        last = (
+            session.query(WatchedEpisode)
+            .filter(
+                WatchedEpisode.tracked_item_id == item_id,
+                WatchedEpisode.season_number != _MOVIE_SEASON,
+            )
+            .order_by(WatchedEpisode.watched_at.desc())
+            .first()
+        )
+        if last is None:
+            raise ValueError(f"'{item.title}' has no watched episodes to undo.")
+
+        season_num = last.season_number
+        episode_num = last.episode_number
+        session.delete(last)
+
+        # A completed show is no longer fully watched — resume it.
+        if item.status == WatchStatus.COMPLETED:
+            item.status = WatchStatus.WATCHING
+
+        return item, season_num, episode_num
+
+
 def mark_all_watched(item_id: int) -> tuple[TrackedItem, int]:
     """Mark every episode of a show (or a movie itself) as watched.
 

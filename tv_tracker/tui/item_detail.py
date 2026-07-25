@@ -20,6 +20,7 @@ from tv_tracker.services import (
     list_tracked_items,
     mark_all_watched,
     mark_next_watched,
+    mark_previous_unwatched,
     mark_watched,
     set_watch_status,
     unmark_watched,
@@ -36,6 +37,7 @@ class ItemDetailScreen(Screen):
         Binding("escape", "app.pop_screen", "Back", show=True),
         Binding("s", "change_status", "Change status", show=True),
         Binding("n", "mark_next", "Mark next watched", show=True),
+        Binding("p", "mark_previous", "Unmark last watched", show=True),
         Binding("w", "toggle_watched", "Toggle watched", show=True),
         Binding("W", "mark_all_watched", "Mark all watched", show=True),
         Binding("u", "toggle_watched", "Unwatch", show=True),
@@ -187,6 +189,7 @@ class ItemDetailScreen(Screen):
                 f"Status: {status_badge(item.status)}  "
                 "[dim]Press [/dim][bold]s[/bold][dim] to change, "
                 "[/dim][bold]n[/bold][dim] for next episode, "
+                "[/dim][bold]p[/bold][dim] to undo last watched, "
                 "[/dim][bold]w/u[/bold][dim] to toggle episode, "
                 "[/dim][bold]W[/bold][dim] to mark whole show watched[/dim]"
             )
@@ -286,6 +289,32 @@ class ItemDetailScreen(Screen):
             self.app.call_from_thread(
                 self.app.notify,
                 f"[green]All episodes watched — marked completed:[/green] {item.title}",
+                timeout=4,
+            )
+        self.app.call_from_thread(self._reload_after_change)
+
+    @work(thread=True)
+    def action_mark_previous(self) -> None:
+        try:
+            item, season, episode = mark_previous_unwatched(self._item_id)
+        except ValueError as exc:
+            self.app.call_from_thread(self.app.notify, f"[red]{exc}[/red]", timeout=5)
+            return
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.app.notify, format_api_error("undo last watched", exc), timeout=5
+            )
+            return
+
+        self.app.call_from_thread(
+            self.app.notify,
+            f"[green]Marked unwatched:[/green] {item.title} S{season:02}E{episode:02}",
+            timeout=4,
+        )
+        if item.status == WatchStatus.WATCHING:
+            self.app.call_from_thread(
+                self.app.notify,
+                f"[cyan]Resumed watching:[/cyan] {item.title}",
                 timeout=4,
             )
         self.app.call_from_thread(self._reload_after_change)

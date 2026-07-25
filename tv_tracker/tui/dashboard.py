@@ -18,6 +18,7 @@ from tv_tracker.services import (
     get_unwatched_movies,
     mark_all_watched,
     mark_next_watched,
+    mark_previous_unwatched,
     run_sync,
     set_watch_status,
 )
@@ -57,6 +58,7 @@ class _DashboardBase(VerticalScroll):
         Binding("enter", "open_detail", "Open detail", show=True),
         Binding("s", "change_status", "Change status", show=True),
         Binding("w", "mark_next", "Mark next watched", show=True),
+        Binding("p", "mark_previous", "Unmark last watched", show=True),
         Binding("W", "mark_all_watched", "Mark all watched", show=True),
     ]
 
@@ -179,6 +181,48 @@ class _DashboardBase(VerticalScroll):
             )
         self.app.call_from_thread(self.app.refresh_all_tabs)  # type: ignore[attr-defined]
 
+    def action_mark_previous(self) -> None:
+        item = self._get_selected_item()
+        if item is None:
+            self.app.notify("[yellow]Select an item first.[/yellow]", timeout=3)
+            return
+        if item.media_type == MediaType.MOVIE:
+            self.app.notify(
+                f"[yellow]'{item.title}' is a movie — open details to unmark it.[/yellow]",
+                timeout=4,
+            )
+            return
+        self._perform_mark_previous(item)
+
+    @work(thread=True)
+    def _perform_mark_previous(self, item: TrackedItem) -> None:
+        self.app.notify(
+            f"[cyan]Undoing last watched episode for '{item.title}'…[/cyan]", timeout=2
+        )
+        try:
+            tracked_item, season, episode = mark_previous_unwatched(item.id)
+        except ValueError as exc:
+            self.app.call_from_thread(self.app.notify, f"[red]{exc}[/red]", timeout=5)
+            return
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.app.notify, format_api_error("undo last watched", exc), timeout=5
+            )
+            return
+
+        self.app.call_from_thread(
+            self.app.notify,
+            f"[green]Marked unwatched:[/green] {tracked_item.title} S{season:02}E{episode:02}",
+            timeout=4,
+        )
+        if tracked_item.status == WatchStatus.WATCHING:
+            self.app.call_from_thread(
+                self.app.notify,
+                f"[cyan]Resumed watching:[/cyan] {tracked_item.title}",
+                timeout=4,
+            )
+        self.app.call_from_thread(self.app.refresh_all_tabs)  # type: ignore[attr-defined]
+
     def action_mark_all_watched(self) -> None:
         item = self._get_selected_item()
         if item is None:
@@ -246,6 +290,7 @@ class ShowsDashboardPane(_DashboardBase):
             "[dim]Press [/dim][bold]Enter[/bold][dim] to open details, "
             "[/dim][bold]s[/bold][dim] to change status, "
             "[/dim][bold]w[/bold][dim] to mark next episode watched, "
+            "[/dim][bold]p[/bold][dim] to undo last watched, "
             "[/dim][bold]W[/bold][dim] to mark whole show watched.[/dim]",
             id="shows-hint",
             classes="dashboard-hint",
