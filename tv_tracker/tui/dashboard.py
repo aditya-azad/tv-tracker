@@ -96,6 +96,37 @@ class _DashboardBase(VerticalScroll):
         """Return the item selected in the focused dashboard table (overridden)."""
         raise NotImplementedError
 
+    _ITEM_TABLES: ClassVar[dict[str, str]] = {}
+
+    def _capture_selected_id(self) -> int | None:
+        """Return the id of the item selected in the focused dashboard table."""
+        focused = self.app.focused
+        if not isinstance(focused, DataTable) or focused.id not in self._ITEM_TABLES:
+            return None
+        row = focused.cursor_row
+        if row is None or row < 0:
+            return None
+        items = getattr(self, self._ITEM_TABLES[focused.id])
+        if row >= len(items):
+            return None
+        return items[row].id
+
+    def _restore_selection(self, item_id: int | None) -> None:
+        """After a reload, move the cursor onto the row holding *item_id*.
+
+        Every dashboard table is searched, so the selection follows the item
+        even when marking it watched moves it between tables.
+        """
+        if item_id is None:
+            return
+        for table_id, attr in self._ITEM_TABLES.items():
+            for idx, item in enumerate(getattr(self, attr)):
+                if item.id == item_id:
+                    table = self.query_one(f"#{table_id}", DataTable)
+                    table.move_cursor(row=idx)
+                    table.focus()
+                    return
+
     def action_open_detail(self) -> None:
         item = self._get_selected_item()
         if item is None:
@@ -274,6 +305,11 @@ class _DashboardBase(VerticalScroll):
 class ShowsDashboardPane(_DashboardBase):
     """Shows dashboard — currently watching and haven't watched for a while."""
 
+    _ITEM_TABLES: ClassVar[dict[str, str]] = {
+        "watching-table": "_watching_items",
+        "stale-table": "_stale_items",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self._watching_items: list[TrackedItem] = []
@@ -313,9 +349,11 @@ class ShowsDashboardPane(_DashboardBase):
 
     def refresh_data(self) -> None:
         """Reload all shows dashboard data from the database."""
+        selected_id = self._capture_selected_id()
         self._load_stats()
         self._load_watching()
         self._load_stale()
+        self._restore_selection(selected_id)
 
     def _get_selected_item(self) -> TrackedItem | None:
         """Return the item selected in whichever shows table is focused."""
@@ -408,6 +446,8 @@ class ShowsDashboardPane(_DashboardBase):
 class MoviesDashboardPane(_DashboardBase):
     """Movies dashboard — only movies that haven't been watched yet."""
 
+    _ITEM_TABLES: ClassVar[dict[str, str]] = {"movies-table": "_movies_items"}
+
     def __init__(self) -> None:
         super().__init__()
         self._movies_items: list[TrackedItem] = []
@@ -439,8 +479,10 @@ class MoviesDashboardPane(_DashboardBase):
 
     def refresh_data(self) -> None:
         """Reload movies dashboard data from the database."""
+        selected_id = self._capture_selected_id()
         self._load_stats()
         self._load_movies()
+        self._restore_selection(selected_id)
 
     def _get_selected_item(self) -> TrackedItem | None:
         """Return the movie selected in the movies table."""
