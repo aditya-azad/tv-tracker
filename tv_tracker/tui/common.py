@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 
-from tv_tracker.models import MediaType, TrackedItem, WatchStatus
+from tv_tracker.models import Episode, MediaType, TrackedItem, WatchStatus
 
 _BAR_WIDTH = 10
 _BAR_FULL = "\u2588"
@@ -69,7 +69,39 @@ def last_watched_label(item: TrackedItem) -> str:
 
 
 def next_episode_label(item: TrackedItem) -> str:
-    """Estimate the next unwatched episode label from watched records."""
+    """Estimate the next *released* unwatched episode from cached air dates.
+
+    Uses persisted :pyattr:`TrackedItem.episodes` air dates to skip episodes
+    that haven't aired yet.  When no episode rows are cached (pre-sync data,
+    API failures, or Jikan numbering quirks) it falls back to the legacy
+    behaviour of incrementing the last-watched episode number so the column
+    never goes blank.
+    """
+    watched = {
+        (we.season_number, we.episode_number)
+        for we in item.watched_episodes
+        if we.season_number != 0
+    }
+    cached = sorted(item.episodes, key=lambda e: (e.season_number, e.episode_number))
+    if cached:
+        today = date.today()
+        unaired_next: Episode | None = None
+        for ep in cached:
+            if (ep.season_number, ep.episode_number) in watched:
+                continue
+            # An unknown air date is treated as released — never hide an
+            # episode solely because we don't know when it airs.
+            if ep.air_date is not None and ep.air_date > today:
+                if unaired_next is None:
+                    unaired_next = ep
+                continue
+            return f"S{ep.season_number:02}E{ep.episode_number:02}"
+        # No released unwatched episode remains.
+        if unaired_next is not None and unaired_next.air_date is not None:
+            return f"[dim]airs {unaired_next.air_date.isoformat()}[/dim]"
+        return "[dim]—[/dim]"
+
+    # Fallback: no cached air dates — increment the last-watched episode.
     if not item.watched_episodes:
         return "S01E01"
     last = max(item.watched_episodes, key=lambda e: (e.season_number, e.episode_number))

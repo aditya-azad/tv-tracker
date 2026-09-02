@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import ClassVar
 
 from textual import work
@@ -28,6 +29,16 @@ from tv_tracker.services import (
 from tv_tracker.tui.common import format_api_error, status_badge
 from tv_tracker.tui.confirm import ConfirmScreen
 from tv_tracker.tui.status_select import StatusSelectScreen
+
+
+def _is_unaired(air_date: str | None) -> bool:
+    """Return True when *air_date* (``YYYY-MM-DD``) is strictly in the future."""
+    if not air_date:
+        return False
+    try:
+        return datetime.strptime(air_date[:10], "%Y-%m-%d").date() > datetime.now(UTC).date()
+    except ValueError:
+        return False
 
 
 class ItemDetailScreen(Screen):
@@ -245,10 +256,13 @@ class ItemDetailScreen(Screen):
             for ep in episodes:
                 is_watched = (season_number, ep.episode_number) in self._watched_keys
                 watched_mark = "[green]yes[/green]" if is_watched else "[dim]no[/dim]"
+                air_cell = ep.air_date or "[dim]—[/dim]"
+                if _is_unaired(ep.air_date):
+                    air_cell = f"{air_cell} [dim](unaired)[/dim]"
                 table.add_row(
                     str(ep.episode_number),
                     ep.name or "[dim]—[/dim]",
-                    ep.air_date or "[dim]—[/dim]",
+                    air_cell,
                     watched_mark,
                 )
 

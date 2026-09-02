@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -77,6 +78,10 @@ class TrackedItem(Base):
         back_populates="tracked_item",
         cascade="all, delete-orphan",
     )
+    episodes: Mapped[list[Episode]] = relationship(
+        back_populates="tracked_item",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (UniqueConstraint("source", "external_id", name="uq_source_external_id"),)
 
@@ -104,19 +109,41 @@ class WatchedEpisode(Base):
 
     tracked_item: Mapped[TrackedItem] = relationship(back_populates="watched_episodes")
 
+
+class Episode(Base):
+    """One row per episode of a tracked show, cached from the API.
+
+    Stores each episode's air date so the dashboard and watch actions can
+    distinguish episodes that have already aired from those merely scheduled.
+    Populated during sync (and when a show is first tracked); refreshed on
+    each subsequent sync.
+    """
+
+    __tablename__ = "episodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tracked_item_id: Mapped[int] = mapped_column(
+        ForeignKey("tracked_items.id", ondelete="CASCADE"), nullable=False
+    )
+    season_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    episode_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    air_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    tracked_item: Mapped[TrackedItem] = relationship(back_populates="episodes")
+
     __table_args__ = (
         UniqueConstraint(
             "tracked_item_id",
             "season_number",
             "episode_number",
-            name="uq_watched_episode",
+            name="uq_episode",
         ),
     )
 
     def __repr__(self) -> str:
         return (
-            f"WatchedEpisode(id={self.id}, tracked_item_id={self.tracked_item_id}, "
-            f"S{self.season_number:02}E{self.episode_number:02})"
+            f"Episode(id={self.id}, tracked_item_id={self.tracked_item_id}, "
+            f"S{self.season_number:02}E{self.episode_number:02}, air_date={self.air_date})"
         )
 
 

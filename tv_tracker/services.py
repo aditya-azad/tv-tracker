@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -14,6 +14,7 @@ from tv_tracker.api.jikan import JikanClient
 from tv_tracker.api.tmdb import TMDBClient
 from tv_tracker.db import session_scope
 from tv_tracker.models import (
+    Episode,
     MediaType,
     Source,
     TrackedItem,
@@ -38,6 +39,21 @@ def _is_date_future(date_str: str | None) -> bool:
     except ValueError:
         return False
     return d.date() > datetime.now(UTC).date()
+
+
+def _parse_air_date(date_str: str | None) -> date | None:
+    """Parse a ``YYYY-MM-DD`` string into a :class:`~datetime.date`, or ``None``.
+
+    Returns ``None`` for missing or unparseable values so callers can treat
+    episodes with unknown air dates as released (never hide an episode solely
+    because its air date is unknown).
+    """
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 def _make_tmdb_client() -> TMDBClient:
@@ -215,6 +231,80 @@ async def _fetch_season_episodes(
     raise ValueError(f"Unknown source: {source!r}")
 
 
+async def _fetch_episodes_map(
+    source: str,
+    external_id: str,
+    details: ShowDetails,
+    tmdb: TMDBClient | None = None,
+    jikan: JikanClient | None = None,
+) -> dict[tuple[int, int], str | None]:
+    """Fetch air dates for every episode of a show, keyed by ``(season, episode)``.
+
+    For TMDB each non-special season (``season_number > 0``) is fetched in
+    parallel.  For Jikan the flat episode list is fetched (modelled as a
+    single season).  Missing ``air_date`` values are stored as ``None`` so
+    callers can still treat episodes with unknown air dates as released.
+    """
+    src = source.lower()
+    result: dict[tuple[int, int], str | None] = {}
+    if src == "tmdb":
+        if tmdb is None:
+            raise ValueError("A TMDB client is required to fetch TMDB episodes.")
+        seasons = [s for s in details.seasons if s.season_number > 0 and s.episode_count > 0]
+        season_infos = await asyncio.gather(
+            *(tmdb.get_tv_season(external_id, s.season_number) for s in seasons)
+        )
+        for sinfo in season_infos:
+            for ep in sinfo.episodes:
+                result[(sinfo.season_number, ep.episode_number)] = ep.air_date
+    elif src == "jikan":
+        if jikan is None:
+            raise ValueError("A Jikan client is required to fetch Jikan episodes.")
+        eps = await jikan.get_anime_episodes(external_id)
+        for ep in eps:
+            result[(1, ep.episode_number)] = ep.air_date
+    else:
+        raise ValueError(f"Unknown source: {source!r}")
+    return result
+
+
+def _fetch_episodes_map_sync(
+    source: str, external_id: str, details: ShowDetails
+) -> dict[tuple[int, int], str | None]:
+    """Synchronous wrapper around :func:`_fetch_episodes_map` (opens a fresh client)."""
+    return asyncio.run(_fetch_episodes_map_with_client(source, external_id, details))
+
+
+async def _fetch_episodes_map_with_client(
+    source: str, external_id: str, details: ShowDetails
+) -> dict[tuple[int, int], str | None]:
+    """Open the appropriate client and fetch the episode air-date map."""
+    src = source.lower()
+    if src == "tmdb":
+        async with _make_tmdb_client() as tmdb:
+            return await _fetch_episodes_map(source, external_id, details, tmdb=tmdb)
+    if src == "jikan":
+        async with JikanClient() as jikan:
+            return await _fetch_episodes_map(source, external_id, details, jikan=jikan)
+    raise ValueError(f"Unknown source: {source!r}")
+
+
+def _store_episodes(
+    session: Session, item_id: int, episodes: dict[tuple[int, int], str | None]
+) -> None:
+    """Replace cached :class:`Episode` rows for *item_id* with *episodes*."""
+    session.query(Episode).filter_by(tracked_item_id=item_id).delete()
+    for (season_number, episode_number), air_date in episodes.items():
+        session.add(
+            Episode(
+                tracked_item_id=item_id,
+                season_number=season_number,
+                episode_number=episode_number,
+                air_date=_parse_air_date(air_date),
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tracking operations
 # ---------------------------------------------------------------------------
@@ -232,10 +322,18 @@ def add_tracked_item(source: str, external_id: str, media_type: str | None = Non
         media_type = MediaType.MOVIE
         total_seasons: int | None = None
         total_episodes: int | None = None
+        episodes_map: dict[tuple[int, int], str | None] | None = None
     else:
         media_type = MediaType.SHOW
         total_seasons = details.number_of_seasons or None
         total_episodes = details.number_of_episodes or None
+        # Best-effort: cache per-episode air dates so the dashboard can tell
+        # released episodes from scheduled ones immediately.  Failures are
+        # non-fatal — air dates are repopulated on the next sync.
+        try:
+            episodes_map = _fetch_episodes_map_sync(source, external_id, details)
+        except Exception:
+            episodes_map = None
 
     # Not yet released -> start as upcoming rather than planning.
     initial_status = (
@@ -260,6 +358,8 @@ def add_tracked_item(source: str, external_id: str, media_type: str | None = Non
         )
         session.add(item)
         session.flush()
+        if episodes_map is not None:
+            _store_episodes(session, item.id, episodes_map)
         return item
 
 
@@ -458,16 +558,22 @@ def mark_watched(
 
 
 def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedItem, int, int]:
-    """Mark the next unwatched episode of a show as watched.
+    """Mark the next unwatched *released* episode of a show as watched.
 
     If *season* is given, the first unwatched episode within that season is
     marked.  If *season* is None the show's season structure is fetched from
     the API and the first unwatched episode across all non-special seasons
     is marked.
 
+    Episodes whose cached air date is still in the future are skipped — only
+    episodes that have already aired (or whose air date is unknown) are
+    marked.  When no released episode remains but an unaired one exists, a
+    ``ValueError`` naming the next air date is raised instead of silently
+    marking a scheduled episode.
+
     Returns ``(item, season_number, episode_number)``.
     Raises ``ValueError`` if the item doesn't exist, is a movie, has no
-    episode data, or every relevant episode is already watched.
+    episode data, or every relevant episode is already watched or unreleased.
     """
     with session_scope() as session:
         item = session.get(TrackedItem, item_id)
@@ -482,6 +588,11 @@ def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedI
             (we.season_number, we.episode_number)
             for we in session.query(WatchedEpisode).filter_by(tracked_item_id=item_id)
         }
+        ep_rows = session.query(Episode).filter_by(tracked_item_id=item_id).all()
+
+    air_dates = {(r.season_number, r.episode_number): r.air_date for r in ep_rows}
+    has_air_dates = bool(air_dates)
+    today = date.today()
 
     details = fetch_details(item.source.value, item.external_id, "show")
     if not isinstance(details, ShowDetails):
@@ -502,15 +613,33 @@ def mark_next_watched(item_id: int, season: int | None = None) -> tuple[TrackedI
         )
 
     target: tuple[int, int] | None = None
+    next_unaired: tuple[int, int, date] | None = None
     for s in seasons:
         for ep_num in range(1, s.episode_count + 1):
-            if (s.season_number, ep_num) not in watched:
-                target = (s.season_number, ep_num)
-                break
+            if (s.season_number, ep_num) in watched:
+                continue
+            # Skip episodes that haven't aired yet, but only when we have
+            # cached air dates — without them, fall back to the legacy
+            # behaviour (treat everything as released) so pre-sync data and
+            # Jikan numbering quirks still work.
+            if has_air_dates:
+                ep_air = air_dates.get((s.season_number, ep_num))
+                if ep_air is not None and ep_air > today:
+                    if next_unaired is None:
+                        next_unaired = (s.season_number, ep_num, ep_air)
+                    continue
+            target = (s.season_number, ep_num)
+            break
         if target is not None:
             break
 
     if target is None:
+        if next_unaired is not None:
+            unaired_date = next_unaired[2]
+            raise ValueError(
+                f"No released episodes left to watch for '{item.title}' "
+                f"(next airs {unaired_date.isoformat()})."
+            )
         if season is not None:
             raise ValueError(
                 f"All episodes of '{item.title}' season {season} are already watched."
@@ -717,7 +846,10 @@ def _get_watching_shows() -> list[TrackedItem]:
     with session_scope() as session:
         items = (
             session.query(TrackedItem)
-            .options(selectinload(TrackedItem.watched_episodes))
+            .options(
+                selectinload(TrackedItem.watched_episodes),
+                selectinload(TrackedItem.episodes),
+            )
             .filter(
                 TrackedItem.status == WatchStatus.WATCHING,
                 TrackedItem.media_type == MediaType.SHOW,
@@ -801,6 +933,7 @@ class _SyncItemData:
     source: str
     external_id: str
     media_type: str
+    status: str
 
 
 @dataclass
@@ -809,6 +942,7 @@ class _SyncFetchResult:
 
     item_id: int
     details: ShowDetails | MovieDetails | None = None
+    episodes: dict[tuple[int, int], str | None] | None = None
     error: str | None = None
 
 
@@ -840,6 +974,7 @@ def _get_sync_items() -> list[_SyncItemData]:
                 source=item.source.value,
                 external_id=item.external_id,
                 media_type=item.media_type.value,
+                status=item.status.value,
             )
             for item in items
         ]
@@ -858,15 +993,39 @@ async def _fetch_all_details(items: list[_SyncItemData]) -> list[_SyncFetchResul
                 details = await _fetch_details_with_clients(
                     item.source, item.external_id, tmdb, jikan, item.media_type
                 )
-                results.append(_SyncFetchResult(item_id=item.id, details=details))
+                # Cache per-episode air dates for non-completed shows so the
+                # dashboard can distinguish released from scheduled episodes.
+                # Completed shows are skipped here to limit API cost; if a
+                # completed show gains new episodes it is flipped to
+                # *watching* below and its episodes are fetched in a second
+                # targeted pass (see :func:`run_sync`).
+                episodes = None
+                if isinstance(details, ShowDetails) and item.status != WatchStatus.COMPLETED.value:
+                    try:
+                        episodes = await _fetch_episodes_map(
+                            item.source, item.external_id, details, tmdb, jikan
+                        )
+                    except Exception:
+                        episodes = None
+                results.append(
+                    _SyncFetchResult(item_id=item.id, details=details, episodes=episodes)
+                )
             except Exception as exc:
                 results.append(_SyncFetchResult(item_id=item.id, error=str(exc)))
     return results
 
 
-def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
-    """Update tracked item totals from fetched details."""
+def _process_sync_results(results: list[_SyncFetchResult]) -> tuple[SyncResult, list[int]]:
+    """Update tracked item totals from fetched details.
+
+    Returns ``(summary, resumed_ids)`` where *resumed_ids* lists shows that
+    were flipped from *completed* back to *watching* (new episodes arrived).
+    Those shows did not have their episodes fetched in the main pass —
+    :func:`run_sync` uses *resumed_ids* to fetch and cache their air dates in
+    a second targeted pass.
+    """
     summary = SyncResult()
+    resumed_ids: list[int] = []
     now = datetime.now(UTC)
 
     with session_scope() as session:
@@ -900,6 +1059,12 @@ def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
             item.total_episodes = fr.details.number_of_episodes or None
             item.last_synced_at = now
 
+            # Cache per-episode air dates for shows fetched in the main pass
+            # (i.e. non-completed shows) so the dashboard can tell released
+            # episodes from scheduled ones.
+            if fr.episodes is not None:
+                _store_episodes(session, item.id, fr.episodes)
+
             watched_count = _count_watched_episodes(session, item.id)
 
             # All available episodes watched — auto-complete.
@@ -920,8 +1085,42 @@ def _process_sync_results(results: list[_SyncFetchResult]) -> SyncResult:
                 item.status = WatchStatus.WATCHING
                 item.resumed_at = now
                 summary.resumed.append(item.title)
+                resumed_ids.append(item.id)
 
-    return summary
+    return summary, resumed_ids
+
+
+async def _fetch_and_store_episodes_for_resumed(
+    fetch_results: list[_SyncFetchResult], resumed_ids: list[int]
+) -> None:
+    """Fetch and cache episode air dates for shows resumed during this sync.
+
+    Completed shows don't have their episodes fetched in the main pass, but a
+    completed show that gains new episodes is flipped to *watching*.  This
+    second pass repopulates air dates for just those shows (using the details
+    already fetched in the main pass) so the dashboard can immediately show
+    only released episodes instead of falling back to the air-date-blind
+    increment behaviour.
+    """
+    resumed_set = set(resumed_ids)
+    if not resumed_set:
+        return
+    async with _make_tmdb_client() as tmdb, JikanClient() as jikan:
+        for fr in fetch_results:
+            if fr.item_id not in resumed_set or not isinstance(fr.details, ShowDetails):
+                continue
+            try:
+                episodes = await _fetch_episodes_map(
+                    fr.details.source.value,
+                    fr.details.external_id,
+                    fr.details,
+                    tmdb,
+                    jikan,
+                )
+            except Exception:
+                continue
+            with session_scope() as session:
+                _store_episodes(session, fr.item_id, episodes)
 
 
 def run_sync() -> SyncResult:
@@ -934,13 +1133,21 @@ def run_sync() -> SyncResult:
     are flipped back to *watching* (listed in :pyattr:`SyncResult.resumed`);
     upcoming items whose release date has passed are moved to *planning*
     (listed in :pyattr:`SyncResult.released`).
+
+    Per-episode air dates are cached for non-completed shows so the dashboard
+    can distinguish released episodes from scheduled ones; shows resumed
+    during this sync (completed -> watching) get their air dates populated in
+    a second targeted pass.
     """
     items = _get_sync_items()
     if not items:
         return SyncResult()
 
     fetch_results = asyncio.run(_fetch_all_details(items))
-    return _process_sync_results(fetch_results)
+    summary, resumed_ids = _process_sync_results(fetch_results)
+    if resumed_ids:
+        asyncio.run(_fetch_and_store_episodes_for_resumed(fetch_results, resumed_ids))
+    return summary
 
 
 def get_unwatched_movies() -> list[TrackedItem]:
